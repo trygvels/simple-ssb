@@ -1,0 +1,7 @@
+openai
+python-dotenv
+rich
+httpx
+pydantic
+openai-agents
+fastmcp
