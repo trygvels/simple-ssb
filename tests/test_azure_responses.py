@@ -23,19 +23,30 @@ def main():
 
     prompt = sys.argv[1] if len(sys.argv) > 1 else "Say hello from the Azure OpenAI Responses API using gpt-5."
 
-    # Create a simple Responses API request
+    reasoning_effort = os.getenv("AZURE_REASONING_EFFORT", "low")
+    reasoning_summary_pref = os.getenv("AZURE_REASONING_SUMMARY", "auto")
+
     response = client.responses.create(
         model=model,
         input=prompt,
+        reasoning={"effort": reasoning_effort, "summary": reasoning_summary_pref},
     )
 
-    # Try to print friendly text output if available
+    try:
+        reasoning_obj = getattr(response, "reasoning", None)
+        if reasoning_obj:
+            summary = getattr(reasoning_obj, "summary", None)
+            if summary:
+                print("[Thoughts]\n" + summary + "\n")
+    except Exception:
+        pass
+
     text = getattr(response, "output_text", None)
     if text:
         print(text)
+        _print_reasoning_usage(response)
         return
 
-    # Fallback: try to extract text from output content
     try:
         outputs = getattr(response, "output", [])
         chunks = []
@@ -45,12 +56,26 @@ def main():
                     chunks.append(getattr(content, "text", ""))
         if chunks:
             print("\n".join(chunks))
+            _print_reasoning_usage(response)
             return
     except Exception:
         pass
 
-    # Last resort: print the raw object
     print(response)
+    _print_reasoning_usage(response)
+
+
+def _print_reasoning_usage(response) -> None:
+    try:
+        usage = getattr(response, "usage", None)
+        if usage:
+            details = getattr(usage, "output_tokens_details", None)
+            if details:
+                r_tokens = getattr(details, "reasoning_tokens", None)
+                if r_tokens is not None:
+                    print(f"\n[Reasoning tokens]: {r_tokens}")
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":
