@@ -252,8 +252,10 @@ class SSBAgent:
                         for i, table in enumerate(tables[:5]):
                             table_id = table.get('id', 'N/A')
                             title = table.get('title', 'N/A')[:60]
-                            score = table.get('score', 0)
-                            console.print(f"     {i+1}. [cyan]{table_id}[/cyan] - {title}... [dim](score: {score})[/dim]")
+                            # Remove table ID from title if it starts with it
+                            if title.startswith(f"{table_id}: "):
+                                title = title[len(f"{table_id}: "):]
+                            console.print(f"     {i+1}. [cyan]{table_id}[/cyan] - {title}...")
                         if len(tables) > 5:
                             console.print(f"     [dim]... and {len(tables) - 5} more[/dim]")
                     else:
