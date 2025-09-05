@@ -36,17 +36,21 @@ model = "gpt-5"
 # Setup
 console = Console()
 
-# Setup logging
+# Setup logging - disable HTTP request logs for cleaner output
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.WARNING,  # Only show warnings and errors
     format="%(message)s",
     datefmt="[%X]",
     handlers=[RichHandler(console=console, show_time=False, show_path=False, markup=True)]
 )
 
+# Specifically disable httpx logging which shows all HTTP requests
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("openai").setLevel(logging.WARNING)
+
 for handler in logging.root.handlers:
     if isinstance(handler, RichHandler):
-        handler.setLevel(logging.INFO)
+        handler.setLevel(logging.WARNING)
 
 class SSBAgent:
     """Norsk SSB Statistikk Agent med Azure OpenAI og 4 strømlinjeformede MCP-verktøy."""
@@ -226,6 +230,129 @@ class SSBAgent:
             else:
                 console.print(f"[cyan]{key}:[/cyan] [white]{value}[/white]")
     
+    def _display_tool_result_summary(self, tool_name: str, output: any) -> None:
+        """Display brief summary of tool results to show if agent is on right track."""
+        try:
+            # Parse the output - handle various formats
+            parsed_output = self._parse_tool_output(output)
+            
+            if isinstance(parsed_output, dict):
+                # Check for errors first
+                if "error" in parsed_output:
+                    console.print(f"   [red]❌ {parsed_output.get('error', 'Unknown error')}[/red]")
+                    return
+                
+                # Tool-specific summaries
+                if tool_name == "search_tables":
+                    tables = parsed_output.get("tables", [])
+                    total = parsed_output.get("total_found", len(tables))
+                    if tables:
+                        best_table = tables[0]
+                        console.print(f"   [green]✓ Found {total} tables, best match: {best_table.get('id', 'N/A')} - {best_table.get('title', 'N/A')[:50]}...[/green]")
+                    else:
+                        console.print(f"   [yellow]⚠ No tables found for search query[/yellow]")
+                
+                elif tool_name == "get_table_info":
+                    table_id = parsed_output.get("table_id", "N/A")
+                    variables = parsed_output.get("variables", [])
+                    time_span = parsed_output.get("time_span", "N/A")
+                    console.print(f"   [green]✓ Table {table_id}: {len(variables)} dimensions, {time_span}[/green]")
+                    
+                    # Show key dimensions
+                    if variables:
+                        dim_names = [v.get("api_name", "N/A") for v in variables[:3]]
+                        console.print(f"   [dim]  Key dimensions: {', '.join(dim_names)}[/dim]")
+                
+                elif tool_name in ["discover_dimension_values", "discover_code_lists", "search_region_codes"]:
+                    dim_name = parsed_output.get("dimension_name", "N/A")
+                    total_values = parsed_output.get("total_values", 0)
+                    matching = parsed_output.get("matching_values", 0)
+                    console.print(f"   [green]✓ Dimension '{dim_name}': {matching}/{total_values} values found[/green]")
+                
+                elif tool_name == "get_filtered_data":
+                    table_id = parsed_output.get("table_id", "N/A")
+                    total_points = parsed_output.get("total_data_points", 0)
+                    returned_points = parsed_output.get("returned_data_points", 0)
+                    console.print(f"   [green]✓ Retrieved {returned_points}/{total_points} data points from table {table_id}[/green]")
+                    
+                    # Show summary stats if available
+                    summary_stats = parsed_output.get("summary_stats", {})
+                    if summary_stats:
+                        min_val = summary_stats.get("min", 0)
+                        max_val = summary_stats.get("max", 0)
+                        console.print(f"   [dim]  Value range: {min_val:.2f} - {max_val:.2f}[/dim]")
+                
+                else:
+                    # Generic summary
+                    key_fields = [k for k in parsed_output.keys() if k not in ['error', 'agent_guidance']][:3]
+                    console.print(f"   [green]✓ Returned data with fields: {', '.join(key_fields)}[/green]")
+            
+            else:
+                console.print(f"   [green]✓ {tool_name} completed[/green]")
+                
+        except Exception:
+            console.print(f"   [yellow]⚠ {tool_name} completed (unable to parse result)[/yellow]")
+    
+    def _parse_tool_output(self, output: any) -> any:
+        """Parse tool output handling various formats from the agent framework."""
+        try:
+            # Handle multiple possible output formats from MCP/Agents SDK
+            parsed_output = output
+            
+            # Case 1: String containing JSON with {"type":"text","text":"..."} format
+            if isinstance(output, str):
+                try:
+                    # First parse the outer JSON
+                    outer_json = json.loads(output)
+                    if isinstance(outer_json, dict) and outer_json.get("type") == "text":
+                        # Extract the inner text content and parse it as JSON
+                        text_content = outer_json.get("text", "")
+                        try:
+                            parsed_output = json.loads(text_content)
+                        except json.JSONDecodeError:
+                            parsed_output = text_content
+                    else:
+                        parsed_output = outer_json
+                except json.JSONDecodeError:
+                    parsed_output = output
+            
+            # Case 2: Dict with "type" and "text" (already parsed outer JSON)
+            elif isinstance(output, dict) and "type" in output and output["type"] == "text":
+                text_content = output.get("text", "")
+                try:
+                    parsed_output = json.loads(text_content)
+                except json.JSONDecodeError:
+                    parsed_output = text_content
+            
+            # Case 3: Dict with "content" key (MCP format)
+            elif isinstance(output, dict) and "content" in output:
+                content = output["content"]
+                if isinstance(content, list) and len(content) > 0:
+                    # Extract from content array
+                    first_content = content[0]
+                    if isinstance(first_content, dict) and "text" in first_content:
+                        try:
+                            parsed_output = json.loads(first_content["text"])
+                        except json.JSONDecodeError:
+                            parsed_output = first_content["text"]
+                    else:
+                        parsed_output = content
+                else:
+                    parsed_output = content
+            
+            # Case 4: Already a dict - use as-is
+            elif isinstance(output, dict):
+                parsed_output = output
+            
+            # Case 5: Other types - convert to string
+            else:
+                parsed_output = str(output)
+            
+            return parsed_output
+                
+        except Exception:
+            return output
+    
     async def process_query(self, query: str) -> str:
         """Process a query using the SSB agent with enhanced reasoning capture and better output formatting."""
         t0 = time.monotonic()
@@ -310,7 +437,11 @@ REGIONAL SAMMENLIGNING ("Oslo vs Bergen"):
 - Bruk norske søkeord og stedsnavn
 - Kilde oppgitt med tabellnummer
 
-Husk: EFFEKTIVITET over alt - færre kall, ingen feil, riktige resultater.""",
+Husk: EFFEKTIVITET over alt - færre kall, ingen feil, riktige resultater.
+
+Dersom det er uklart hvilken tabell du skal bruke, bruk en av dem og prøv å besvar spørsmålet, deretter foreslå alternativer om det finnes.
+
+""",
                 model=self.model,
                 mcp_servers=[self.mcp_server],
                 model_settings=agent_model_settings.ModelSettings(
@@ -329,7 +460,7 @@ Husk: EFFEKTIVITET over alt - færre kall, ingen feil, riktige resultater.""",
                 max_turns=20  # Increase turn limit for complex queries
             )
             
-            console.print(f"🧠 {model} Reasoning Model Analysis")
+            console.print(f"[bold blue]🧠 {model} Analysis[/bold blue]")
             
             # Enhanced streaming with better reasoning capture
             reasoning_content = []
@@ -492,6 +623,8 @@ Husk: EFFEKTIVITET over alt - færre kall, ingen feil, riktige resultater.""",
                                 pass
 
                             self._display_tool_output(last_tool, tool_output)
+                            # Also show brief summary
+                            self._display_tool_result_summary(last_tool, tool_output)
                         
                         elif event.item.type == "message_output_item":
                             # Final message output

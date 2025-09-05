@@ -1,19 +1,68 @@
-# SSB Data Analysis MCP Server
+# SSB Data Analysis Agent & MCP Server
 
 **Intelligent Norwegian Statistical Data Discovery & Analysis**
 
-A production-ready Model Context Protocol (MCP) server that transforms Norway's statistical API into an intelligent, agent-friendly interface for comprehensive data analysis across all statistical domains.
+A production-ready system offering two interfaces for accessing Norway's statistical data: an **autonomous standalone agent** with real-time streaming and an **MCP server** for integration with agent frameworks. Both provide intelligent access to all of Statistics Norway's data through autonomous tool usage.
 
 ## 🎯 **System Overview**
 
 This MCP server provides AI agents with intelligent access to **all of Norway's statistical data** through Statistics Norway's (SSB) PxWebAPI v2-beta. The system is designed to be completely **domain-agnostic**, working identically across employment, demographics, housing, healthcare, education, energy, transport, economy, and environmental statistics.
 
 ### **🧠 Key Intelligence Features**
+- **Autonomous Decision Making**: Agents autonomously decide tool usage without predetermined workflows
 - **Self-Learning**: Discovers SSB API patterns through intelligent error analysis
 - **Domain-Agnostic**: No hardcoded assumptions - adapts to any statistical domain
 - **Error-Driven Learning**: Transforms API failures into learning opportunities
-- **Workflow Intelligence**: Each tool guides agents to logical next steps
+- **Real-Time Streaming**: Live feedback showing tool calls and results as they happen
+- **Intelligent Summaries**: Brief, informative summaries of tool results to track progress
 - **API Mastery**: Automatic handling of Norwegian API conventions
+
+---
+
+## 🚀 **Usage Options**
+
+### **🤖 Standalone Agent** (Direct Usage)
+Interactive command-line agent with real-time streaming and autonomous tool usage:
+
+```bash
+# Population queries
+python ssb_standalone_agent.py "befolkning i Norge 2024"
+python ssb_standalone_agent.py "hvor mange bor i Oslo"
+
+# Employment analysis  
+python ssb_standalone_agent.py "hvilken næring har flest sysselsatte"
+python ssb_standalone_agent.py "arbeidsledighet etter fylke"
+
+# Fertility trends
+python ssb_standalone_agent.py "hvordan har fruktbarheten endret seg i oslo de siste 60 åra?"
+
+# Research & Development
+python ssb_standalone_agent.py "hvor mye av fou utgifter finansiert av eu"
+```
+
+**Features:**
+- ✅ **Streaming output** with real-time tool call visualization
+- ✅ **Progress indicators** showing agent's decision-making process  
+- ✅ **Intelligent summaries** of tool results to track success
+- ✅ **Autonomous workflows** - agent decides tool usage independently
+- ✅ **Clean interface** with no technical clutter
+
+### **🔌 MCP Server** (Integration)
+For integration with MCP-compatible agent frameworks:
+
+```bash
+# Start MCP server
+python src/mcp_server.py
+
+# Use with MCP-compatible agents
+python src/ssb_agent_mcp.py "Din statistikkspørring"
+```
+
+**Features:**
+- ✅ **Standard MCP protocol** for framework integration
+- ✅ **Enhanced tool output** with intelligent result summaries
+- ✅ **Clean logging** without HTTP request clutter
+- ✅ **Full compatibility** with existing MCP agents
 
 ---
 
@@ -45,7 +94,9 @@ This MCP server provides AI agents with intelligent access to **all of Norway's 
 
 ### **Prerequisites**
 - Python 3.8+
-- FastMCP framework
+- OpenAI Agents SDK (for standalone agent)
+- FastMCP framework (for MCP server)
+- Azure OpenAI access (configured via environment variables)
 - Access to SSB PxWebAPI v2-beta (public, no authentication required)
 
 ### **Installation**
@@ -57,16 +108,36 @@ cd simple-ssb
 # Install dependencies
 pip install -r requirements.txt
 
-# Run MCP server
+# Set up environment variables
+export AZURE_OPENAI_API_KEY="your-api-key"
+export AZURE_OPENAI_ENDPOINT="https://your-resource.openai.azure.com/"
+export AZURE_OPENAI_MODEL="gpt-5"
+```
+
+### **Quick Start**
+
+**Standalone Agent:**
+```bash
+# Try the autonomous streaming agent
+python ssb_standalone_agent.py "befolkning i Norge 2024"
+```
+
+**MCP Server:**
+```bash
+# Start MCP server for integration
 python src/mcp_server.py
+
+# Or use the integrated MCP agent
+python src/ssb_agent_mcp.py "befolkning i Norge 2024"
 ```
 
 ### **Testing**
 ```bash
-# Run comprehensive tests
+# Test domain agnosticism across multiple areas
+python tests/test_fou_domain.py
 python tests/test_comprehensive_mcp.py
 
-# Run basic verification
+# Quick verification
 python -c "
 import asyncio
 from src.mcp_server import search_tables
