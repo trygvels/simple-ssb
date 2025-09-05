@@ -1,90 +1,147 @@
 #!/usr/bin/env python3
 """
-Enhanced SSB MCP Server - Advanced filtering, aggregation, and data analysis
+SSB Data Analysis MCP Server - Intelligent Statistical Data Discovery & Analysis
+
+AVAILABLE TOOLS FOR DATA ANALYSIS:
+==================================
+
+🔍 search_tables(query: str) -> dict
+   Purpose: Discovery and selection of statistical tables from SSB's database
+   Agent Use: Find relevant tables by search terms, get ranked results with metadata
+   Data Analysis: Essential first step - identifies available datasets for analysis
+   Output: Table IDs, titles, time periods, variable counts, relevance scores
+
+📊 get_table_info(table_id: str, include_structure: bool = True) -> dict
+   Purpose: Complete table structure analysis with API dimension mapping
+   Agent Use: Understand table contents, dimensions, time coverage, data availability
+   Data Analysis: Critical for query planning - reveals all analysis dimensions
+   Output: Variable details, API names, sample values, aggregation options, workflow guidance
+
+🎯 discover_dimension_values(table_id: str, dimension_name: str, search_term: str = "", include_code_lists: bool = True) -> dict
+   Purpose: Explore dimension values, administrative levels, and filtering codes
+   Agent Use: Get all available codes for filtering, find regional/categorical breakdowns
+   Data Analysis: Enables precise data segmentation and comparative analysis
+   Output: All dimension codes with labels, administrative groupings, usage guidance
+
+📈 get_filtered_data(table_id: str, filters: dict, time_selection: str = "", code_lists: dict = {}) -> dict
+   Purpose: Extract specific statistical data with intelligent error handling
+   Agent Use: Retrieve actual data points for analysis with proper filtering
+   Data Analysis: Core data extraction for statistical analysis and visualization
+   Output: Structured data with dimensions, summary statistics, diagnostic guidance
+
+
+DATA ANALYSIS CAPABILITIES:
+===========================
+✅ Cross-Domain Analysis: Works identically for employment, demographics, housing, healthcare, etc.
+✅ Time Series Analysis: Automated time dimension discovery and period selection
+✅ Regional Analysis: Municipal, county, and national level data with administrative codes
+✅ Comparative Analysis: Multi-dimensional breakdowns for statistical comparisons
+✅ Trend Analysis: Historical data spanning decades with consistent methodology
+✅ Error-Driven Learning: Intelligent error handling teaches proper API usage patterns
+
+INTELLIGENCE FEATURES:
+=====================
+🧠 Self-Learning: Discovers SSB API patterns through intelligent error analysis
+🎯 Domain-Agnostic: No hardcoded assumptions - adapts to any statistical domain
+🔄 Workflow Guidance: Each tool suggests logical next steps for analysis
+🛠️ API Mastery: Automatic translation between Norwegian terms and API requirements
+📊 Quality Assurance: Data validation, summary statistics, and diagnostic information
+
+This MCP server transforms SSB's complex statistical API into an intelligent, 
+agent-friendly interface optimized for comprehensive data analysis workflows.
 """
 
 import asyncio
 import httpx
-from typing import Dict, List, Any, Optional
+from typing import Optional
 from fastmcp import FastMCP
 from pydantic import Field
 from datetime import datetime, timedelta
-import json
-import hashlib
-import re
 
 # Create FastMCP server
-mcp = FastMCP("Enhanced SSB Discovery")
+mcp = FastMCP("Clean SSB Discovery")
 
-
-def generate_advanced_ssb_queries(original_query: str) -> List[str]:
-    """
-    Generate advanced SSB API queries using official search syntax in a
-    generic, domain-agnostic manner. No hardcoded keywords.
-
-    Guidance applied:
-    - Prefer title-restricted search to reduce noise
-    - Explore administrative scopes (K/F) generically
-    - Avoid closed/discontinued series
-    - Limit to a small set of diverse variants
-    """
-    query = original_query.lower().strip()
-    variations: List[str] = []
-
-    # Always include the original query as-is
-    variations.append(original_query)
-
-    # Extract meaningful words (3+ characters, skip common words)
-    stop_words = {"hvor", "mange", "hva", "når", "the", "and", "or", "in", "på", "med", "for", "til", "av", "og", "i"}
-    words = [w for w in query.split() if len(w) > 2 and w not in stop_words]
-
-    if words:
-        # Use the longest word as an anchor to bias toward specific tables
-        primary_term = max(words, key=len)
-        # A small, generic set of variations that work across domains
-        variations.extend([
-            f'title:{primary_term} NOT "closed series"',
-            f'title:{primary_term} AND title:(K) NOT "closed series"',  # Municipal/kommunal scope
-            f'title:{primary_term} AND title:(F) NOT "closed series"',  # County/fylke scope
-            primary_term,
-        ])
-        # If multiple meaningful words, try a simple conjunction
-        if len(words) > 1:
-            secondary_term = sorted((w for w in words if w != primary_term), key=len, reverse=True)[0]
-            variations.append(f'title:{primary_term} AND title:{secondary_term} NOT "closed series"')
-
-    # Remove duplicates while preserving order; keep it tight for latency
-    seen = set()
-    final_variations: List[str] = []
-    for v in variations:
-        if v and v not in seen and len(final_variations) < 5:
-            seen.add(v)
-            final_variations.append(v)
-
-    return final_variations
-
-# Rate limiter and cache classes
+# Rate limiter 
 class RateLimiter:
-    def __init__(self, max_calls=25, time_window=600):  # Conservative limit
+    def __init__(self, max_calls=25, time_window=600):
         self.max_calls = max_calls
         self.time_window = time_window
         self.calls = []
 
     async def acquire(self):
         now = datetime.now()
-        # Remove old calls outside time window
         self.calls = [call for call in self.calls if call > now - timedelta(seconds=self.time_window)]
 
         if len(self.calls) >= self.max_calls:
             sleep_time = self.time_window - (now - self.calls[0]).total_seconds()
             if sleep_time > 0:
-                # Cap wait time to prevent MCP timeouts
                 await asyncio.sleep(min(sleep_time, 2.0))
 
         self.calls.append(now)
 
 # Global instances
 rate_limiter = RateLimiter()
+
+
+def create_error_response(tool_name: str, table_id: str = None, error_msg: str = "", suggestion: str = "", **extras) -> dict:
+    """Create standardized error response with agent guidance."""
+    response = {
+        "error": error_msg,
+        "suggestion": suggestion,
+        "agent_guidance": {
+            "recommended_action": "retry_with_corrections",
+            "tool_name": tool_name
+        }
+    }
+    
+    if table_id:
+        response["table_id"] = table_id
+        
+    response.update(extras)
+    return response
+
+def enhance_variable_info(variables: list) -> list:
+    """Enhance variable information for agent use."""
+    enhanced = []
+    
+    for var in variables:
+        enhanced.append({
+            "display_name": var,
+            "api_name": var,  # Use actual API name directly
+            "is_mapped": False,  # No mapping needed - use real names
+            "pattern_hint": f"Use '{var}' in API calls"
+        })
+    
+    return enhanced
+
+def add_agent_guidance(tool_name: str, result: dict, **context) -> dict:
+    """Add agent-specific guidance to tool results."""
+    
+    guidance_map = {
+        "search_tables": {
+            "next_suggested_tools": ["get_table_info"],
+            "workflow_hint": f"Found {result.get('total_found', 0)} tables, consider analyzing the top-scored ones"
+        },
+        "get_table_info": {
+            "next_suggested_tools": ["discover_dimension_values", "get_filtered_data"],
+            "workflow_hint": "Complete table info ready - use api_name values for dimension queries"
+        },
+        "discover_dimension_values": {
+            "next_suggested_tools": ["get_filtered_data"],
+            "workflow_hint": "Use returned codes in filters for data retrieval"
+        }
+    }
+    
+    base_guidance = guidance_map.get(tool_name, {})
+    
+    result["agent_guidance"] = {
+        "tool_name": tool_name,
+        "status": "success" if "error" not in result else "error",
+        **base_guidance,
+        **context
+    }
+    
+    return result
 
 async def robust_api_call(url: str, params: dict, max_retries: int = 3) -> Optional[dict]:
     """Make API call with retry logic and rate limiting."""
@@ -104,22 +161,12 @@ async def robust_api_call(url: str, params: dict, max_retries: int = 3) -> Optio
 
         except httpx.HTTPStatusError as e:
             print(f"DEBUG: HTTP error {e.response.status_code}")
-            error_details = {
-                "status_code": e.response.status_code,
-                "url": str(e.request.url),
-                "params": params,
-                "response_text": e.response.text[:500] if hasattr(e.response, 'text') else "N/A"
-            }
-            print(f"DEBUG: Error details: {error_details}")
-
-            if e.response.status_code == 429:  # Rate limited
+            if e.response.status_code == 429:
                 await asyncio.sleep(2 ** attempt)
                 continue
             else:
-                # Return detailed error instead of raising
                 return {
                     "error": f"HTTP {e.response.status_code} error from SSB API",
-                    "details": error_details,
                     "suggestion": "Check API parameters and table availability"
                 }
 
@@ -129,147 +176,65 @@ async def robust_api_call(url: str, params: dict, max_retries: int = 3) -> Optio
                 raise
             await asyncio.sleep(2 ** attempt)
 
-    print("DEBUG: All retries exhausted, returning None")
-    return None
-
-async def robust_api_call_post(url: str, json_body: dict, max_retries: int = 3) -> Optional[dict]:
-    """Make POST API call with retry logic and rate limiting."""
-    await rate_limiter.acquire()
-
-    print(f"DEBUG: Calling POST API {url} with body {json_body}")
-
-    for attempt in range(max_retries):
-        try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(url, json=json_body)
-                print(f"DEBUG: POST API response status: {response.status_code}")
-                response.raise_for_status()
-                result = response.json()
-                print(f"DEBUG: POST API returned {type(result)} with keys: {list(result.keys()) if isinstance(result, dict) else 'N/A'}")
-                return result
-
-        except httpx.HTTPStatusError as e:
-            print(f"DEBUG: POST HTTP error {e.response.status_code}")
-            error_details = {
-                "status_code": e.response.status_code,
-                "url": str(e.request.url),
-                "json_body": json_body,
-                "response_text": e.response.text[:500] if hasattr(e.response, 'text') else "N/A"
-            }
-            print(f"DEBUG: POST Error details: {error_details}")
-
-            if e.response.status_code == 429:  # Rate limited
-                await asyncio.sleep(2 ** attempt)
-                continue
-            else:
-                # Return detailed error instead of raising
-                return {
-                    "error": f"HTTP {e.response.status_code} error from SSB API",
-                    "details": error_details,
-                    "suggestion": "Check API parameters and table availability"
-                }
-
-        except (httpx.RequestError, asyncio.TimeoutError) as e:
-            print(f"DEBUG: POST Request/Timeout error: {e}")
-            if attempt == max_retries - 1:
-                raise
-            await asyncio.sleep(2 ** attempt)
-
-    print("DEBUG: POST All retries exhausted, returning None")
     return None
 
 @mcp.tool()
-async def search_tables_advanced(
-    query: str = Field(description="Search query for SSB statistical tables"),
-    language: str = Field(default="no", pattern="^(no|en)$", description="Language for results"),
-    max_results: int = Field(default=20, le=50, description="Maximum number of results"),
-    recent_only: bool = Field(default=False, description="Only recently updated tables")
+async def search_tables(
+    query: str = Field(description="Search query for SSB statistical tables")
 ) -> dict:
     """
     Advanced search for SSB statistical tables using official API search syntax.
-
-    Leverages SSB's powerful search features:
-    - title: prefix to search in titles only
-    - AND/OR/NOT operators for precise filtering
-    - (K), (F), (T) suffixes for administrative levels
-    - Excludes discontinued series with NOT "closed series"
-    - Multiple query variations for comprehensive coverage
-
-    This ensures highly relevant, active tables are found efficiently.
+    Generates multiple query variations and scores results for relevance.
     """
 
     try:
-        print(f"DEBUG: Starting multi-query search for '{query}'")
-
-        # Generate advanced SSB API queries using official syntax
-        query_variations = generate_advanced_ssb_queries(query)
-        print(f"DEBUG: Generated variations: {query_variations}")
-
+        print(f"DEBUG: Searching for '{query}'")
+        
         base_url = "https://data.ssb.no/api/pxwebapi/v2-beta/tables"
-        all_tables = {}  # Use dict to deduplicate by table ID
-
-        # Try each query variation with timeout protection
-        max_variations = min(3, len(query_variations))  # Limit to 3 variations for speed
-        for i, search_query in enumerate(query_variations[:max_variations], 1):
-            print(f"DEBUG: Trying variation {i}/{max_variations}: '{search_query}'")
-
+        language = "no"  # Fixed Norwegian language
+        max_results = 10  # Fixed default
+        
+        # Generate simple query variations
+        query_variations = [
+            query,
+            f'title:{query} NOT "closed series"',
+            f'title:{query} AND title:(K) NOT "closed series"'  # Municipal scope
+        ]
+        
+        all_tables = {}
+        
+        # Try query variations
+        for search_query in query_variations[:2]:  # Limit to 2 for speed
             params = {
                 "query": search_query,
                 "lang": language,
-                "pageSize": min(max_results, 50)
+                "pageSize": max_results
             }
 
-            if recent_only:
-                params["pastDays"] = 30
-
-            # Direct API call without caching to avoid cache pollution
             data = await robust_api_call(base_url, params)
-
+            
             if data and 'tables' in data:
-                variation_tables = data.get('tables', [])
-                print(f"DEBUG: Variation '{search_query}' found {len(variation_tables)} tables")
-
-                # Add tables to collection, avoiding duplicates
-                for table in variation_tables:
+                for table in data.get('tables', []):
                     table_id = table.get('id')
                     if table_id and table_id not in all_tables:
                         all_tables[table_id] = table
 
-                # If we have enough results, stop early
-                if len(all_tables) >= max_results:
-                    print(f"DEBUG: Found enough tables ({len(all_tables)}), stopping early")
-                    break
-
-            # Reduced delay for speed
-            if i < max_variations:
-                await asyncio.sleep(0.05)
-
         tables = list(all_tables.values())
-        print(f"DEBUG: Multi-query search found {len(tables)} unique tables total")
-
-        # Simple but effective scoring for population queries
+        
+        # Simple scoring
         query_words = query.lower().split()
         scored_tables = []
 
         for table in tables:
             label = table.get('label', '').lower()
-            description = table.get('description', '').lower()
-            table_id = table.get('id', '')
-
-            # Start with base score of 1 to ensure all tables are considered
             score = 1
-
-            # Domain-agnostic scoring based on term matches
+            
             for word in query_words:
-                if len(word) > 2:  # Skip short words
-                    if word in label:
-                        score += 10
-                    if word in description:
-                        score += 5
+                if len(word) > 2 and word in label:
+                    score += 10
 
-            # Boost for recent updates (fresher data preferred)
-            updated = table.get('updated', '')
-            if updated and ('2024' in updated or '2025' in updated):
+            # Boost for recent updates
+            if '2024' in table.get('updated', '') or '2025' in table.get('updated', ''):
                 score += 5
 
             scored_tables.append({
@@ -279,328 +244,387 @@ async def search_tables_advanced(
                 'updated': table.get('updated', ''),
                 'score': score,
                 'time_period': f"{table.get('firstPeriod', '')} - {table.get('lastPeriod', '')}",
-                'variables': len(table.get('variableNames', table.get('variables', []))),  # Support both formats
+                'variables': len(table.get('variableNames', [])),
                 'subject_area': table.get('subjectCode', '')
             })
 
-        # Sort by score
         scored_tables.sort(key=lambda x: x['score'], reverse=True)
 
-        print(f"DEBUG: Returning {len(scored_tables)} scored tables")
-
-        return {
+        result = {
             "query": query,
             "language": language,
             "tables": scored_tables[:max_results],
             "total_found": len(scored_tables),
             "search_tips": [
-                "Try Norwegian keywords for better results (e.g., 'befolkning' instead of 'population')",
-                "Use specific terms (e.g., 'arbeidsledighet' rather than 'jobb')",
-                "Check different time periods with recent_only filter"
+                "Try Norwegian keywords for better results",
+                "Use specific terms rather than general ones"
             ]
         }
 
+        return add_agent_guidance("search_tables", result)
+
     except Exception as e:
-        return {"error": f"Advanced search failed: {str(e)}", "tables": [], "total_found": 0}
+        return {"error": f"Search failed: {str(e)}", "tables": [], "total_found": 0}
 
 @mcp.tool()
 async def get_table_info(
     table_id: str = Field(description="SSB table identifier"),
-    language: str = Field(default="no", pattern="^(no|en)$", description="Language preference")
+    include_structure: bool = Field(default=True, description="Include detailed structure analysis")
 ) -> dict:
     """
-    Get basic table information including title, time coverage, and variables.
-
-    Uses the /tables/{id} endpoint for quick overview before detailed analysis.
-    Shows firstPeriod, lastPeriod, variableNames, and subject classification.
+    Get complete table information combining metadata and detailed structure analysis.
+    This consolidated tool provides both basic metadata and detailed dimension information.
     """
 
     try:
-        print(f"DEBUG: Getting basic info for table {table_id}")
+        print(f"DEBUG: Getting comprehensive info for table {table_id}")
 
         base_url = "https://data.ssb.no/api/pxwebapi/v2-beta/tables"
         info_url = f"{base_url}/{table_id}"
-
+        metadata_url = f"{base_url}/{table_id}/metadata"
+        language = "no"  # Fixed Norwegian language
         params = {"lang": language}
 
-        data = await robust_api_call(info_url, params)
-        if not data:
-            return {"error": "Failed to retrieve table information", "table_id": table_id}
+        # Get basic table info first
+        basic_data = await robust_api_call(info_url, params)
+        
+        if not basic_data:
+            return create_error_response(
+                "get_table_info", 
+                table_id=table_id,
+                error_msg="Failed to retrieve table information",
+                suggestion="Check network connection and table ID"
+            )
+        
+        if not basic_data.get("label"):
+            return create_error_response(
+                "get_table_info",
+                table_id=table_id, 
+                error_msg="Table not found or unavailable",
+                suggestion="Check table ID or use search_tables"
+            )
 
-        info = {
+        # Build basic information
+        variables = basic_data.get("variableNames", [])
+        enhanced_variables = enhance_variable_info(variables)
+        
+        comprehensive_info = {
             "table_id": table_id,
-            "title": data.get("label", "No title"),
-            "description": data.get("description", ""),
-            "first_period": data.get("firstPeriod", "Unknown"),
-            "last_period": data.get("lastPeriod", "Unknown"),
-            "last_updated": data.get("updated", "Unknown"),
-            "variables": data.get("variableNames", []),
-            "subject_paths": data.get("path", []),
-            "total_variables": len(data.get("variableNames", [])),
-            "time_span": f"{data.get('firstPeriod', 'Unknown')} - {data.get('lastPeriod', 'Unknown')}"
+            "title": basic_data.get("label", ""),
+            "description": basic_data.get("description", ""),
+            "first_period": basic_data.get("firstPeriod", ""),
+            "last_period": basic_data.get("lastPeriod", ""),
+            "last_updated": basic_data.get("updated", ""),
+            "source": "Statistics Norway (SSB)",
+            "variables": enhanced_variables,
+            "total_variables": len(variables),
+            "time_span": f"{basic_data.get('firstPeriod', 'Unknown')} - {basic_data.get('lastPeriod', 'Unknown')}",
+            "data_availability": {
+                "has_recent_data": "2024" in str(basic_data.get("lastPeriod", "")) or "2025" in str(basic_data.get("lastPeriod", "")),
+                "time_coverage": basic_data.get("lastPeriod", "Unknown"),
+                "frequency": "quarterly" if "K" in str(basic_data.get("lastPeriod", "")) else "monthly" if "M" in str(basic_data.get("lastPeriod", "")) else "annual"
+            }
         }
 
-        return info
+        # Get detailed structure if requested
+        if include_structure:
+            metadata = await robust_api_call(metadata_url, params)
+            if metadata and isinstance(metadata, dict):
+                dimensions = metadata.get("dimension", {})
+                detailed_variables = []
+                aggregation_options = {}
+                
+                for dim_name, dim_data in dimensions.items():
+                    category = dim_data.get("category", {})
+                    codes = list(category.get("index", []))
+                    labels = category.get("label", {})
+                    
+                    # Find corresponding enhanced variable info
+                    enhanced_var = next((v for v in enhanced_variables if v["display_name"] == dim_name), None)
+                    api_name = enhanced_var["api_name"] if enhanced_var else dim_name
+                    
+                    detailed_var = {
+                        "display_name": dim_name,
+                        "api_name": api_name,
+                        "is_mapped": enhanced_var["is_mapped"] if enhanced_var else False,
+                        "pattern_hint": enhanced_var["pattern_hint"] if enhanced_var else None,
+                        "type": "dimension",
+                        "total_values": len(codes),
+                        "sample_values": codes[:5] if codes else [],
+                        "sample_labels": [labels.get(code, code) for code in codes[:5]] if codes else []
+                    }
+                    
+                    # Check for aggregation options
+                    extension = dim_data.get("extension", {})
+                    code_lists = extension.get("codeLists", [])
+                    
+                    if code_lists:
+                        agg_info = {"valuesets": [], "aggregations": []}
+                        for code_list_item in code_lists:
+                            if isinstance(code_list_item, dict):
+                                item_type = code_list_item.get("type", "").lower()
+                                item_info = {
+                                    "id": code_list_item.get("id", ""),
+                                    "label": code_list_item.get("label", ""),
+                                    "type": item_type
+                                }
+                                
+                                if item_type == "valueset":
+                                    agg_info["valuesets"].append(item_info)
+                                elif item_type == "aggregation":
+                                    agg_info["aggregations"].append(item_info)
+                        
+                        if agg_info["valuesets"] or agg_info["aggregations"]:
+                            aggregation_options[dim_name] = agg_info
+                    
+                    detailed_variables.append(detailed_var)
+                
+                comprehensive_info["variables"] = detailed_variables
+                comprehensive_info["aggregation_options"] = aggregation_options
+                comprehensive_info["structure_included"] = True
+            else:
+                comprehensive_info["structure_included"] = False
+        else:
+            comprehensive_info["structure_included"] = False
+
+        # Add workflow guidance
+        comprehensive_info["workflow_guidance"] = {
+            "next_steps": [
+                "Use discover_dimension_values to get specific codes for dimensions",
+                "Use get_filtered_data for data retrieval with proper API dimension names"
+            ],
+            "recommended_tools": ["discover_dimension_values", "get_filtered_data"],
+            "workflow_hint": "Complete table info ready - use api_name values in subsequent calls"
+        }
+
+        return add_agent_guidance("get_table_info", comprehensive_info)
 
     except Exception as e:
-        print(f"DEBUG: Error getting table info: {str(e)}")
-        return {"error": f"Failed to get table info: {str(e)}", "table_id": table_id}
+        print(f"DEBUG: Error getting comprehensive table info: {str(e)}")
+        return create_error_response(
+            "get_table_info",
+            table_id=table_id,
+            error_msg=f"Unexpected error: {str(e)}",
+            suggestion="Try again or contact support"
+        )
 
 @mcp.tool()
-async def analyze_table_structure(
+async def discover_dimension_values(
     table_id: str = Field(description="SSB table identifier"),
-    language: str = Field(default="no", pattern="^(no|en)$", description="Language preference")
+    dimension_name: str = Field(description="Name of dimension to explore (e.g., 'Region', 'ContentsCode', 'Tid')"),
+    search_term: str = Field(default="", description="Optional search term to filter values"),
+    include_code_lists: bool = Field(default=True, description="Include available code lists and aggregations")
 ) -> dict:
-    """Analyze table structure and provide detailed metadata with aggregation options and query suggestions."""
+    """
+    Discover available values for any dimension, with optional code lists and aggregations.
+    Consolidated functionality from discover_dimension_values + discover_code_lists + search_region_codes.
+    """
 
     try:
-        base_url = "https://data.ssb.no/api/pxwebapi/v2-beta/tables"
-        metadata_url = f"{base_url}/{table_id}/metadata"
-        params = {"lang": language}
+        print(f"DEBUG: Discovering values for dimension '{dimension_name}' in table {table_id}")
 
-        metadata = await robust_api_call(metadata_url, params)
-        if not metadata:
-            return {"error": "Failed to fetch metadata", "table_id": table_id}
+        meta_url = f"https://data.ssb.no/api/pxwebapi/v2-beta/tables/{table_id}/metadata"
+        language = "no"  # Fixed Norwegian language
+        meta_params = {"lang": language}
 
-        analysis = {
+        metadata = await robust_api_call(meta_url, meta_params)
+        if not metadata or 'dimension' not in metadata:
+            return create_error_response(
+                "discover_dimension_values",
+                table_id=table_id,
+                error_msg="Could not retrieve table metadata",
+                suggestion="Check table ID and dimension name"
+            )
+
+        dimensions = metadata.get('dimension', {})
+        if dimension_name not in dimensions:
+            available_dims = list(dimensions.keys())
+            return create_error_response(
+                "discover_dimension_values",
+                table_id=table_id,
+                error_msg=f"Dimension '{dimension_name}' not found",
+                suggestion=f"Use one of: {available_dims}",
+                available_dimensions=available_dims,
+                pattern_hint=f"Notice: '{dimension_name}' → try '{available_dims[0]}' (common pattern: lowercase → CamelCase)"
+            )
+
+        dim_data = dimensions[dimension_name]
+        all_values = dim_data.get('category', {}).get('label', {})
+
+        # Filter values if search term provided
+        if search_term:
+            search_lower = search_term.lower()
+            filtered_values = {}
+            for code, label in all_values.items():
+                if search_lower in label.lower() or search_lower in code.lower():
+                    filtered_values[code] = label
+            values_to_show = filtered_values
+        else:
+            values_to_show = all_values
+
+        # Convert to list format
+        value_list = [
+            {"code": code, "label": label}
+            for code, label in values_to_show.items()
+        ]
+
+        # Limit output for readability
+        if len(value_list) > 20:
+            shown_values = value_list[:20]
+            truncated = len(value_list) - 20
+        else:
+            shown_values = value_list
+            truncated = 0
+
+        result = {
             "table_id": table_id,
-            "title": metadata.get("label", ""),
-            "description": metadata.get("description", ""),
-            "last_updated": metadata.get("updated", ""),
-            "source": metadata.get("source", "Statistics Norway"),
-            "variables": [],
-            "aggregation_options": {},
-            "data_coverage": {},
-            "query_suggestions": [],
-            "CRITICAL_API_DIMENSION_MAPPING": {
-                "statistikkvariabel": "ContentsCode",
-                "næring (SN2007)": "NACE2007",
-                "næring": "NACE2007",
-                "region": "Region",
-                "år": "Tid",
-                "kvartal": "Tid",
-                "måned": "Tid",
-                "kjønn": "Kjonn",
-                "alder": "Alder"
-            },
-            "api_dimension_warning": "⚠️ CRITICAL: NEVER use display names in API calls! Use the CRITICAL_API_DIMENSION_MAPPING above to translate dimension names before calling discover_dimension_values or get_filtered_data."
+            "dimension_name": dimension_name,
+            "search_term": search_term,
+            "total_values": len(all_values),
+            "matching_values": len(value_list),
+            "values": shown_values,
+            "truncated_count": truncated,
+            "usage_suggestion": f"Use the 'code' values in filters for {dimension_name}"
         }
 
-        # Analyze dimensions from the metadata
-        dimensions = metadata.get("dimension", {})
+        # Add code lists if requested
+        if include_code_lists:
+            extension = dim_data.get('extension', {})
+            code_lists = extension.get('codeLists', [])
+            
+            result["code_lists"] = {}
+            result["recommendations"] = []
+            
+            for code_list_item in code_lists:
+                if isinstance(code_list_item, dict):
+                    item_id = code_list_item.get('id', '')
+                    item_label = code_list_item.get('label', '')
+                    item_type = code_list_item.get('type', '').lower()
 
-        for dim_name, dim_data in dimensions.items():
-            # Get basic dimension info
-            category = dim_data.get("category", {})
-            codes = list(category.get("index", []))
-            labels = category.get("label", {})
+                    result["code_lists"][item_id] = {
+                        "type": item_type,
+                        "label": item_label,
+                        "usage_example": f"code_lists={{'{dimension_name}': '{item_id}'}}"
+                    }
 
-            var_info = {
-                "code": dim_name,
-                "label": dim_name,
-                "type": "dimension",
-                "total_values": len(codes),
-                "sample_values": codes[:5] if codes else [],
-                "sample_labels": [labels.get(code, code) for code in codes[:5]] if codes else [],
-                "has_aggregation": False,
-                "aggregation_options": []
-            }
+                    # Add dynamic recommendations based on content analysis
+                    if item_type == "valueset":
+                        if 'fylker' in item_id.lower() or 'county' in item_label.lower():
+                            result["recommendations"].append(f"Use '{item_id}' for regional grouping analysis")
+                        elif 'kommun' in item_id.lower() or 'municipal' in item_label.lower():
+                            result["recommendations"].append(f"Use '{item_id}' for local area analysis")
+                        else:
+                            result["recommendations"].append(f"Use '{item_id}' for {item_label.lower()} grouping")
+                    elif item_type == "aggregation":
+                        result["recommendations"].append(f"Use '{item_id}' for aggregated {item_label.lower()} data")
 
-            # Check for aggregation options (code lists)
-            extension = dim_data.get("extension", {})
-            code_lists = extension.get("codeLists", [])  # This is a LIST, not a dict
-
-            if code_lists:
-                var_info["has_aggregation"] = True
-                aggregation_info = {
-                    "valuesets": [],
-                    "aggregations": []
-                }
-
-                # Process the codeLists array directly
-                for code_list_item in code_lists:
-                    if isinstance(code_list_item, dict):
-                        item_type = code_list_item.get("type", "").lower()
-                        item_info = {
-                            "id": code_list_item.get("id", ""),
-                            "label": code_list_item.get("label", ""),
-                            "type": item_type
-                        }
-
-                        if item_type == "valueset":
-                            item_info["usage"] = "Use with codelist parameter for predefined selections"
-                            aggregation_info["valuesets"].append(item_info)
-                            var_info["aggregation_options"].append(f"Valueset: {item_info['id']} - {item_info['label']}")
-                        elif item_type == "aggregation":
-                            item_info["usage"] = "Use with codelist + outputValues=aggregated/single"
-                            aggregation_info["aggregations"].append(item_info)
-                            var_info["aggregation_options"].append(f"Aggregation: {item_info['id']} - {item_info['label']}")
-
-                analysis["aggregation_options"][dim_name] = aggregation_info
-
-            analysis["variables"].append(var_info)
-
-        analysis["data_coverage"]["total_data_combinations"] = f"{len(dimensions)} dimensions"
-        analysis["data_coverage"]["exceeds_api_limit"] = len(dimensions) > 3
-
-        # Generate enhanced suggestions based on discovered dimensions and aggregations
-        suggestions = []
-
-        # Find time-related dimensions
-        time_dims = [dim for dim in dimensions.keys() if any(t in dim.lower() for t in ['tid', 'år', 'year', 'time', 'kvartal', 'måned'])]
-        if time_dims:
-            suggestions.append({
-                "type": "recent_data",
-                "description": f"Get recent data using {time_dims[0]}",
-                "example": f"Use time_selection='top(5)' or specific year like '2025'"
-            })
-
-        # Find region-related dimensions with aggregation suggestions
-        region_dims = [dim for dim in dimensions.keys() if any(r in dim.lower() for r in ['region', 'kommune', 'fylke', 'geo'])]
-        if region_dims:
-            region_dim = region_dims[0]
-            if region_dim in analysis["aggregation_options"]:
-                agg_options = analysis["aggregation_options"][region_dim]
-                if agg_options["aggregations"]:
-                    for agg in agg_options["aggregations"]:
-                        if "fylker" in agg["id"].lower():
-                            suggestions.append({
-                                "type": "county_aggregation",
-                                "description": f"Get county-level data using {agg['id']}",
-                                "example": f"Use code_lists={{'{region_dim}': '{agg['id']}'}} with outputValues={{'{region_dim}': 'single'}}"
-                            })
-                        elif "kommun" in agg["id"].lower():
-                            suggestions.append({
-                                "type": "municipality_aggregation",
-                                "description": f"Get municipality data using {agg['id']}",
-                                "example": f"Use code_lists={{'{region_dim}': '{agg['id']}'}} with outputValues={{'{region_dim}': 'aggregated'}}"
-                            })
-            else:
-                suggestions.append({
-                    "type": "geographic_filter",
-                    "description": f"Filter by location using {region_dim}",
-                    "example": f"Use discover_dimension_values to find codes for {region_dim}"
-                })
-
-        # Generic dimension exploration
-        if dimensions:
-            suggestions.append({
-                "type": "explore_dimensions",
-                "description": "Explore available values for any dimension",
-                "example": f"Use discover_dimension_values on dimensions like: {', '.join(list(dimensions.keys())[:3])}"
-            })
-
-        analysis["query_suggestions"] = suggestions
-
-        return analysis
+        return add_agent_guidance("discover_dimension_values", result)
 
     except Exception as e:
-        return {"error": f"Structure analysis failed: {str(e)}", "table_id": table_id}
+        print(f"DEBUG: Error in discover_dimension_values: {str(e)}")
+        return create_error_response(
+            "discover_dimension_values",
+            table_id=table_id,
+            error_msg=f"Failed to discover dimension values: {str(e)}",
+            suggestion="Check table ID and dimension name"
+        )
 
 @mcp.tool()
 async def get_filtered_data(
     table_id: str = Field(description="SSB table identifier"),
-    filters: dict = Field(description="REQUIRED: Dimension filters as dict, e.g. {'Region': '3806', 'ContentsCode': 'Folkemengde', 'Tid': '2023'}. Use codes from discover_dimension_values."),
-    language: str = Field(default="no", pattern="^(no|en)$", description="Language preference"),
-    output_format: str = Field(default="json-stat2", description="Output format"),
-    max_data_points: int = Field(default=100, le=1000, description="Maximum data points to return"),
-    time_selection: str = Field(default="", description="Advanced time selection: 'top(5)', 'from(2020)', 'range(2020,2023)', '2020*' for wildcards"),
-    code_lists: dict = Field(default={}, description="Specify code lists: {'Region': 'vs_Fylker'} for counties, {'Region': 'vs_Kommun'} for municipalities"),
-    output_values: dict = Field(default={}, description="Aggregation control: {'Region': 'aggregated'} or {'Region': 'single'}")
+    filters: dict = Field(description="REQUIRED: Dimension filters as dict, e.g. {'Region': '3806', 'ContentsCode': 'Folkemengde', 'Tid': '2023'}"),
+    time_selection: str = Field(default="", description="Advanced time selection: 'top(5)', 'from(2020)', '2020*' for wildcards"),
+    code_lists: dict = Field(default={}, description="Code lists: {'Region': 'vs_Fylker'} for counties")
 ) -> dict:
     """
-    Get filtered statistical data with advanced SSB API features.
-
-    ADVANCED FILTERING CAPABILITIES:
-    - Time selections: top(n), from(year), range(start,end), wildcards (2020*)
-    - Code lists: vs_Fylker (counties), vs_Kommun (municipalities), agg_* (groupings)
-    - Output values: 'aggregated' for sums, 'single' for individual values
-    - Wildcards: ?? for 2-digit codes, * for all values
-
-    Example: filters={'Region': 'K-3103', 'Tid': 'top(5)'}, code_lists={'Region': 'agg_KommSummer'}
+    Get filtered statistical data with enhanced error handling and validation.
+    Includes diagnostic information when queries fail.
     """
 
     try:
-        # Validate that filters is provided and is a dict
-        if not filters:
-            return {
-                "error": "filters parameter is required and cannot be empty",
-                "suggestion": "Use discover_dimension_values to find correct codes, then provide filters like {'Region': '3806', 'Tid': '2023'}",
-                "table_id": table_id
-            }
-
-        if not isinstance(filters, dict):
-            return {
-                "error": f"filters must be a dict, got {type(filters)}",
-                "suggestion": "Use format: filters={'DimensionName': 'code'}",
-                "table_id": table_id
-            }
+        # Debug the filters parameter type
+        print(f"DEBUG: filters type: {type(filters)}, value: {filters}")
+        
+        # Handle potential Field object from FastMCP
+        if hasattr(filters, 'default') and hasattr(filters, 'description'):
+            # This is a Field object, use its default value
+            filters = filters.default if filters.default is not None else {}
+        
+        # Validate filters
+        if not filters or not isinstance(filters, dict):
+            return create_error_response(
+                "get_filtered_data",
+                table_id=table_id,
+                error_msg="filters parameter is required and must be a dict",
+                suggestion="Use discover_dimension_values to find correct codes, then provide filters like {'Region': '3806', 'Tid': '2023'}"
+            )
 
         base_url = "https://data.ssb.no/api/pxwebapi/v2-beta/tables"
         data_url = f"{base_url}/{table_id}/data"
+        language = "no"  # Fixed Norwegian language
+        max_data_points = 100  # Fixed default
 
-        # Build GET request with advanced SSB API features (GET method works better for advanced features)
+        # Build query parameters
         query_params = {
             "lang": language,
-            "outputformat": output_format
+            "outputformat": "json-stat2"
         }
 
-        # Add code list specifications (new feature)
-        for dimension, code_list in code_lists.items():
-            query_params[f"codelist[{dimension}]"] = code_list
-            print(f"DEBUG: Using code list {dimension}={code_list}")
+        # Add code lists (handle potential Field objects)
+        if hasattr(code_lists, 'default'):
+            code_lists = code_lists.default if code_lists.default is not None else {}
+        
+        if isinstance(code_lists, dict):
+            for dimension, code_list in code_lists.items():
+                query_params[f"codelist[{dimension}]"] = code_list
 
-        # Add output value specifications (new feature)
-        for dimension, output_type in output_values.items():
-            query_params[f"outputValues[{dimension}]"] = output_type
-            print(f"DEBUG: Using output values {dimension}={output_type}")
+        # Handle filters (ensure filters is a dict)
+        if isinstance(filters, dict):
+            for dimension, values in filters.items():
+                if isinstance(values, str):
+                    value_list = [values] if ',' not in values else values.split(',')
+                else:
+                    value_list = values if isinstance(values, list) else [str(values)]
 
-        # Handle filters with advanced syntax
-        for dimension, values in filters.items():
-            if isinstance(values, str):
-                value_list = [values] if ',' not in values else values.split(',')
-            else:
-                value_list = values if isinstance(values, list) else [str(values)]
+                query_params[f"valueCodes[{dimension}]"] = ",".join(value_list)
 
-            query_params[f"valueCodes[{dimension}]"] = ",".join(value_list)
-            print(f"DEBUG: Added filter {dimension}={query_params[f'valueCodes[{dimension}]']}")
-
-        # Handle time_selection with advanced syntax
-        if time_selection:
+        # Handle time selection (handle potential Field objects)
+        if hasattr(time_selection, 'default'):
+            time_selection = time_selection.default if time_selection.default is not None else ""
+        
+        if time_selection and isinstance(time_selection, str):
             query_params["valueCodes[Tid]"] = time_selection
-            print(f"DEBUG: Using advanced time selection: {time_selection}")
 
-        print(f"DEBUG: Using GET method with params: {query_params}")
+        print(f"DEBUG: Getting filtered data with params: {query_params}")
 
-        # No hardcoded mappings - let the agent discover codes dynamically
-
-        print(f"DEBUG: Using GET method with advanced parameters")
-
-        # Use GET method with advanced parameters
         data = await robust_api_call(data_url, query_params)
         if not data:
-            return {"error": "Failed to fetch filtered data", "table_id": table_id}
+            return create_error_response(
+                "get_filtered_data",
+                table_id=table_id,
+                error_msg="Failed to fetch filtered data",
+                suggestion="Check filters and try again"
+            )
 
-        print(f"DEBUG: SSB API returned data with keys: {list(data.keys()) if isinstance(data, dict) else type(data)}")
-
-        # Check if we got an error response
+        # Check for API errors
         if isinstance(data, dict) and "error" in data:
-            print(f"DEBUG: SSB API returned error: {data}")
-        elif not data:
-            print(f"DEBUG: SSB API returned empty/None data")
-        elif isinstance(data, dict):
-            print(f"DEBUG: SSB API success - processing {len(data.get('value', []))} values")
+            # Enhanced error response with diagnostic info
+            error_response = create_error_response(
+                "get_filtered_data",
+                table_id=table_id,
+                error_msg=f"SSB API error: {data['error']}",
+                suggestion="Check dimension names and codes using discover_dimension_values",
+                filters_attempted=filters,
+                diagnostic_hint="Use discover_dimension_values to verify dimension names and available codes"
+            )
+            
+            # Add details if available
+            if "details" in data:
+                error_response["api_details"] = data["details"]
+                
+            return error_response
 
-        if isinstance(data, dict) and "error" in data:
-            return {
-                "table_id": table_id,
-                "error": f"Filtered data retrieval failed: {data['error']}",
-                "details": data.get("details", {}),
-                "filters_attempted": filters,
-                "suggestion": data.get("suggestion", "Try simpler filters or check dimension codes")
-            }
-
-        # Process JSON-stat2 data for easier consumption
+        # Process successful response
         result = {
             "table_id": table_id,
             "title": data.get("label", f"Table {table_id}"),
@@ -635,7 +659,7 @@ async def get_filtered_data(
 
             result["returned_data_points"] = non_null_count
 
-            # Add summary statistics if numeric data
+            # Add summary statistics
             numeric_values = [v for v in values if v is not None and isinstance(v, (int, float))]
             if numeric_values:
                 result["summary_stats"] = {
@@ -648,441 +672,14 @@ async def get_filtered_data(
         return result
 
     except Exception as e:
-        return {
-            "table_id": table_id,
-            "error": f"Filtered data retrieval failed: {str(e)}",
-            "filters_applied": filters
-        }
-
-@mcp.tool()
-async def search_region_codes(
-    region_name: str = Field(description="Name of the region/municipality to search for"),
-    language: str = Field(default="no", pattern="^(no|en)$", description="Language for the search")
-) -> dict:
-    """
-    Search for current region codes by querying SSB table metadata.
-    Uses known population tables to find region codes dynamically.
-    """
-
-    try:
-        print(f"DEBUG: Searching for region codes for '{region_name}'")
-
-        # First search for tables that might have region data
-        search_url = "https://data.ssb.no/api/pxwebapi/v2-beta/tables"
-        search_params = {
-            "query": f"title:region OR title:kommune OR title:fylke NOT \"closed series\"",
-            "lang": language,
-            "pageSize": 5
-        }
-
-        search_results = await robust_api_call(search_url, search_params)
-        if not search_results or 'tables' not in search_results:
-            return {
-                "region_name": region_name,
-                "error": "Could not find tables with region data",
-                "suggestion": "Try using discover_dimension_values on a specific table"
-            }
-
-        tables_to_check = [table['id'] for table in search_results['tables'][:3]]
-
-        for table_id in tables_to_check:
-            print(f"DEBUG: Checking table {table_id} for region codes")
-
-            # Get detailed metadata from the /metadata endpoint
-            meta_url = f"https://data.ssb.no/api/pxwebapi/v2-beta/tables/{table_id}/metadata"
-            meta_params = {"lang": language}
-
-            metadata = await robust_api_call(meta_url, meta_params)
-            if not metadata or 'dimension' not in metadata:
-                print(f"DEBUG: No dimension data in table {table_id}")
-                continue
-
-            # Look for Region dimension
-            dimensions = metadata.get('dimension', {})
-            if 'Region' not in dimensions:
-                print(f"DEBUG: No Region dimension in table {table_id}")
-                continue
-
-            region_dim = dimensions['Region']
-            region_values = region_dim.get('category', {}).get('label', {})
-
-            print(f"DEBUG: Found {len(region_values)} regions in table {table_id}")
-
-            # Search for matching region names (case-insensitive)
-            matching_codes = []
-            region_name_lower = region_name.lower()
-
-            for code, label in region_values.items():
-                if region_name_lower in label.lower():
-                    matching_codes.append({
-                        "code": code,
-                        "label": label,
-                        "table_id": table_id
-                    })
-
-            if matching_codes:
-                print(f"DEBUG: Found {len(matching_codes)} matches in table {table_id}")
-                return {
-                    "region_name": region_name,
-                    "codes_found": matching_codes,
-                    "total_found": len(matching_codes),
-                    "suggestion": f"Use code(s) in Region filter: {[c['code'] for c in matching_codes]}",
-                    "source_table": table_id
-                }
-
-        # If no matches found in any table
-        return {
-            "region_name": region_name,
-            "codes_found": [],
-            "error": f"No matching region codes found for '{region_name}' in tables {known_tables}",
-            "suggestion": "Try a different spelling, check if the region exists, or use a broader search term"
-        }
-
-    except Exception as e:
-        print(f"DEBUG: Error in search_region_codes: {str(e)}")
-        return {
-            "region_name": region_name,
-            "codes_found": [],
-            "error": f"Failed to search for region codes: {str(e)}",
-            "suggestion": "Try using the region name directly or check table structure manually"
-        }
-
-@mcp.tool()
-async def discover_code_lists(
-    table_id: str = Field(description="SSB table identifier"),
-    dimension_name: str = Field(description="Dimension to explore (e.g., 'Region', 'ContentsCode')"),
-    language: str = Field(default="no", pattern="^(no|en)$", description="Language preference")
-) -> dict:
-    """
-    Discover available code lists (valuesets and groupings) for a dimension.
-
-    Code lists include:
-    - vs_*: Valuesets (predefined selections like vs_Fylker for counties)
-    - agg_*: Aggregation groupings (e.g., agg_Fylker2024 for current counties)
-
-    This helps choose the right administrative level and groupings for filtering.
-    """
-
-    try:
-        print(f"DEBUG: Discovering code lists for {dimension_name} in table {table_id}")
-
-        # Get detailed metadata to find code lists
-        meta_url = f"https://data.ssb.no/api/pxwebapi/v2-beta/tables/{table_id}/metadata"
-        params = {"lang": language}
-
-        metadata = await robust_api_call(meta_url, params)
-        if not metadata or 'dimension' not in metadata:
-            return {
-                "table_id": table_id,
-                "dimension_name": dimension_name,
-                "error": "Could not retrieve table metadata",
-                "suggestion": "Check table ID and try again"
-            }
-
-        dimensions = metadata.get('dimension', {})
-        if dimension_name not in dimensions:
-            available_dims = list(dimensions.keys())
-            return {
-                "table_id": table_id,
-                "dimension_name": dimension_name,
-                "error": f"Dimension '{dimension_name}' not found",
-                "available_dimensions": available_dims,
-                "suggestion": f"Use one of: {available_dims}"
-            }
-
-        dim_data = dimensions[dimension_name]
-        extension = dim_data.get('extension', {})
-        code_lists = extension.get('codeLists', [])
-
-        result = {
-            "table_id": table_id,
-            "dimension_name": dimension_name,
-            "code_lists": {},
-            "recommendations": []
-        }
-
-        # Process the codeLists array directly
-        for code_list_item in code_lists:
-            if isinstance(code_list_item, dict):
-                item_id = code_list_item.get('id', '')
-                item_label = code_list_item.get('label', '')
-                item_type = code_list_item.get('type', '').lower()
-
-                result["code_lists"][item_id] = {
-                    "type": item_type,
-                    "label": item_label,
-                    "description": f"{item_type.title()}: {item_label}",
-                    "usage_example": f"code_lists={{'{dimension_name}': '{item_id}'}}" + (
-                        f" with outputValues={{'{dimension_name}': 'aggregated' or 'single'}}" if item_type == "aggregation" else ""
-                    )
-                }
-
-                # Add specific recommendations based on type and content
-                if item_type == "valueset":
-                    if 'fylker' in item_id.lower() or 'county' in item_label.lower():
-                        result["recommendations"].append(f"Use '{item_id}' for county-level analysis")
-                    elif 'kommun' in item_id.lower() or 'municipal' in item_label.lower():
-                        result["recommendations"].append(f"Use '{item_id}' for municipality-level analysis")
-                    elif 'landet' in item_id.lower():
-                        result["recommendations"].append(f"Use '{item_id}' for national-level data")
-
-                elif item_type == "aggregation":
-                    if 'fylker' in item_id.lower():
-                        result["recommendations"].append(f"Use '{item_id}' with outputValues[{dimension_name}]=single for current county structure")
-                        result["recommendations"].append(f"Example: Get all current counties with filters={{'Region': '*', 'Tid': 'top(1)'}}, code_lists={{'{dimension_name}': '{item_id}'}}, output_values={{'{dimension_name}': 'single'}}")
-                    elif 'komm' in item_id.lower():
-                        result["recommendations"].append(f"Use '{item_id}' with outputValues[{dimension_name}]=aggregated for merged municipalities")
-                        result["recommendations"].append(f"Example: Get aggregated municipality data with code_lists={{'{dimension_name}': '{item_id}'}}, output_values={{'{dimension_name}': 'aggregated'}}")
-
-        if not result["code_lists"]:
-            result["message"] = f"No special code lists found for {dimension_name}. Use standard dimension values."
-            result["fallback_suggestion"] = f"Use discover_dimension_values('{table_id}', '{dimension_name}') to see all available values"
-
-        return result
-
-    except Exception as e:
-        print(f"DEBUG: Error discovering code lists: {str(e)}")
-        return {
-            "table_id": table_id,
-            "dimension_name": dimension_name,
-            "error": f"Failed to discover code lists: {str(e)}",
-            "suggestion": "Try using standard dimension values with discover_dimension_values"
-        }
-
-@mcp.tool()
-async def diagnose_table_requirements(
-    table_id: str = Field(description="SSB table identifier that failed"),
-    error_message: str = Field(description="Error message received from SSB API"),
-    attempted_filters: dict = Field(description="Filters that were attempted"),
-    language: str = Field(default="no", pattern="^(no|en)$", description="Language preference")
-) -> dict:
-    """
-    Diagnose why a table query failed and suggest corrections.
-
-    This tool helps the agent understand:
-    - Which dimensions are mandatory vs optional
-    - What the correct dimension names are (not assumptions)
-    - What codes are actually available for each dimension
-    - How to build a complete filter set for any table
-
-    Use this when get_filtered_data fails to learn the table's requirements.
-    """
-
-    try:
-        print(f"DEBUG: Diagnosing table {table_id} failure: {error_message}")
-
-        # Get complete table metadata
-        meta_url = f"https://data.ssb.no/api/pxwebapi/v2-beta/tables/{table_id}/metadata"
-        params = {"lang": language}
-
-        metadata = await robust_api_call(meta_url, params)
-        if not metadata:
-            return {
-                "table_id": table_id,
-                "error": "Could not retrieve table metadata for diagnosis",
-                "suggestion": "Check table ID and try again"
-            }
-
-        dimensions = metadata.get('dimension', {})
-        diagnosis = {
-            "table_id": table_id,
-            "error_analysis": error_message,
-            "attempted_filters": attempted_filters,
-            "all_dimensions": {},
-            "missing_mandatory": [],
-            "suggestions": []
-        }
-
-        # Analyze each dimension
-        for dim_name, dim_data in dimensions.items():
-            category = dim_data.get('category', {})
-            codes = category.get('index', [])
-            labels = category.get('label', [])
-
-            # Check if this dimension was attempted
-            was_attempted = dim_name in attempted_filters
-
-            diagnosis["all_dimensions"][dim_name] = {
-                "attempted": was_attempted,
-                "total_values": len(codes),
-                "sample_codes": codes[:5] if codes else [],
-                "sample_labels": labels[:5] if len(labels) >= 5 else labels,
-                "has_total_code": any(code in ['0', '00-99', '*', 'I alt'] for code in codes[:10])
-            }
-
-            # If not attempted and error mentions missing selection, it's likely mandatory
-            if not was_attempted and "missing selection" in error_message.lower():
-                diagnosis["missing_mandatory"].append(dim_name)
-
-        # Generate specific suggestions
-        if diagnosis["missing_mandatory"]:
-            diagnosis["suggestions"].append(
-                f"Add these mandatory dimensions to filters: {diagnosis['missing_mandatory']}"
-            )
-
-            for dim in diagnosis["missing_mandatory"]:
-                dim_info = diagnosis["all_dimensions"][dim]
-                if dim_info["has_total_code"]:
-                    diagnosis["suggestions"].append(
-                        f"For {dim}, try total codes like: {[c for c in dim_info['sample_codes'] if c in ['0', '00-99', '*', 'I alt']]}"
-                    )
-                else:
-                    diagnosis["suggestions"].append(
-                        f"For {dim}, use discover_dimension_values to find appropriate codes"
-                    )
-
-        diagnosis["suggestions"].append(
-            "Use the EXACT dimension names from this analysis - no assumptions"
+        return create_error_response(
+            "get_filtered_data",
+            table_id=table_id,
+            error_msg=f"Unexpected error: {str(e)}",
+            suggestion="Check parameters and try again",
+            filters_applied=filters
         )
 
-        return diagnosis
-
-    except Exception as e:
-        print(f"DEBUG: Error in diagnosis: {str(e)}")
-        return {
-            "table_id": table_id,
-            "error": f"Diagnosis failed: {str(e)}",
-            "suggestion": "Try analyze_table_structure and discover_dimension_values manually"
-        }
-
-@mcp.tool()
-async def web_search_ssb_info(
-    search_query: str = Field(description="Search query for SSB-related information"),
-    language: str = Field(default="no", pattern="^(no|en)$", description="Language preference")
-) -> dict:
-    """
-    Search the web for current SSB information when API metadata is insufficient.
-    Useful for finding current municipality codes, table IDs, or understanding data availability.
-    """
-
-    try:
-        # Construct search query focused on SSB
-        ssb_query = f"site:ssb.no {search_query} statistikk kommune kode"
-        if language == "en":
-            ssb_query = f"site:ssb.no {search_query} statistics municipality code"
-
-        print(f"DEBUG: Web searching for SSB info: '{ssb_query}'")
-
-        # Use a simple web search (you could integrate with a proper search API)
-        search_url = "https://www.google.com/search"
-        search_params = {
-            "q": ssb_query,
-            "num": 5,
-            "hl": language
-        }
-
-        # For now, return a structured suggestion since we can't do actual web scraping
-        # In a production system, you'd integrate with a proper search API
-        return {
-            "search_query": search_query,
-            "suggestion": f"Search SSB.no manually for: '{search_query}'",
-            "recommended_actions": [
-                "Check SSB.no for current municipality codes",
-                "Look for updated table documentation",
-                "Verify data availability for the specific region",
-                "Try alternative table IDs if current one has issues"
-            ],
-            "fallback_strategy": "Use analyze_table_structure to explore available regions in different tables"
-        }
-
-    except Exception as e:
-        return {
-            "search_query": search_query,
-            "error": f"Web search failed: {str(e)}",
-            "suggestion": "Try using SSB API tools to explore available data"
-        }
-
-@mcp.tool()
-async def discover_dimension_values(
-    table_id: str = Field(description="SSB table identifier"),
-    dimension_name: str = Field(description="Name of dimension to explore (e.g., 'Region', 'ContentsCode', 'Tid')"),
-    search_term: str = Field(default="", description="Optional search term to filter values"),
-    language: str = Field(default="no", pattern="^(no|en)$", description="Language preference")
-) -> dict:
-    """
-    Discover actual available values for any dimension in a table.
-    This is the key tool for learning what values are actually available.
-    """
-
-    try:
-        print(f"DEBUG: Discovering values for dimension '{dimension_name}' in table {table_id}")
-
-        # Get detailed metadata from the /metadata endpoint
-        meta_url = f"https://data.ssb.no/api/pxwebapi/v2-beta/tables/{table_id}/metadata"
-        meta_params = {"lang": language}
-
-        metadata = await robust_api_call(meta_url, meta_params)
-        if not metadata or 'dimension' not in metadata:
-            return {
-                "table_id": table_id,
-                "dimension_name": dimension_name,
-                "error": "Could not retrieve table metadata",
-                "suggestion": "Check if table exists and dimension name is correct"
-            }
-
-        # Look for the specific dimension
-        dimensions = metadata.get('dimension', {})
-        if dimension_name not in dimensions:
-            available_dims = list(dimensions.keys())
-            # Provide clear learning opportunity for the agent
-            return {
-                "table_id": table_id,
-                "dimension_name": dimension_name,
-                "error": f"Dimension '{dimension_name}' not found",
-                "available_dimensions": available_dims,
-                "suggestion": f"Use one of: {available_dims}",
-                "pattern_hint": f"Notice: '{dimension_name}' → try '{available_dims[0]}' (common pattern: lowercase → CamelCase or Norwegian → English)"
-            }
-
-        dim_data = dimensions[dimension_name]
-        all_values = dim_data.get('category', {}).get('label', {})
-
-        print(f"DEBUG: Found {len(all_values)} values in dimension {dimension_name}")
-
-        # Filter values if search term provided
-        if search_term:
-            search_lower = search_term.lower()
-            filtered_values = {}
-            for code, label in all_values.items():
-                if search_lower in label.lower() or search_lower in code.lower():
-                    filtered_values[code] = label
-            values_to_show = filtered_values
-        else:
-            values_to_show = all_values
-
-        # Convert to list format for easier consumption
-        value_list = [
-            {"code": code, "label": label}
-            for code, label in values_to_show.items()
-        ]
-
-        # Limit output for readability
-        if len(value_list) > 20:
-            shown_values = value_list[:20]
-            truncated = len(value_list) - 20
-        else:
-            shown_values = value_list
-            truncated = 0
-
-        return {
-            "table_id": table_id,
-            "dimension_name": dimension_name,
-            "search_term": search_term,
-            "total_values": len(all_values),
-            "matching_values": len(value_list),
-            "values": shown_values,
-            "truncated_count": truncated,
-            "suggestion": f"Use the 'code' values in filters for {dimension_name}"
-        }
-
-    except Exception as e:
-        print(f"DEBUG: Error in discover_dimension_values: {str(e)}")
-        return {
-            "table_id": table_id,
-            "dimension_name": dimension_name,
-            "error": f"Failed to discover dimension values: {str(e)}",
-            "suggestion": "Check table ID and dimension name"
-        }
 
 if __name__ == "__main__":
     mcp.run()

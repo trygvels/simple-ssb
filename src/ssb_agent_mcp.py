@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """
-Simple SSB Agent MCP - Minimal implementation with Azure OpenAI
+SSB Statistikk Agent - Norsk statistikk med Azure OpenAI og strømlinjeformet MCP
 
-Usage:
-    python ssb_agent_mcp.py "Your query about Norwegian statistics"
+Intelligente svar på norske spørsmål om statistikk ved bruk av SSB's API.
+Optimalisert for 4 strømlinjeformede MCP-verktøy og norske spørringer.
+
+Bruk:
+    python ssb_agent_mcp.py "Din spørring om norsk statistikk"
 """
 
 import asyncio
@@ -45,7 +48,7 @@ for handler in logging.root.handlers:
         handler.setLevel(logging.INFO)
 
 class SSBAgent:
-    """Enhanced SSB Agent using Azure OpenAI and advanced MCP capabilities."""
+    """Norsk SSB Statistikk Agent med Azure OpenAI og 4 strømlinjeformede MCP-verktøy."""
     
     def __init__(self):
         # Prefer the .env next to this package (servers/simple-ssb/.env)
@@ -475,7 +478,7 @@ Remember: Stay generic, domain-agnostic, and data-driven. Use tools purposefully
                                         parsed = json.loads(tool_output)
                                     except json.JSONDecodeError:
                                         parsed = None
-                                if last_tool == "analyze_table_structure" and isinstance(parsed, dict):
+                                if last_tool == "get_table_info" and isinstance(parsed, dict):
                                     last_analysis = parsed
                             except Exception:
                                 pass
@@ -540,20 +543,21 @@ async def main():
     """Main CLI interface."""
     
     if len(sys.argv) != 2:
-        console.print("[red]Usage:[/red] python ssb_agent_mcp.py \"Your query\"")
-        console.print("\n[bold]Examples:[/bold]")
-        console.print("\n[cyan]Basic Queries:[/cyan]")
-        console.print("  python ssb_agent_mcp.py \"befolkning\"")
-        console.print("  python ssb_agent_mcp.py \"arbeidsledighet\"")
-        console.print("  python ssb_agent_mcp.py \"utdanning\"")
-        console.print("\n[cyan]Analysis Queries:[/cyan]")
-        console.print("  python ssb_agent_mcp.py \"Compare population between Oslo and Bergen\"")
-        console.print("  python ssb_agent_mcp.py \"Historical unemployment trends since 2020\"")
-        console.print("  python ssb_agent_mcp.py \"Latest education statistics by region\"")
-        console.print("\n[cyan]English Queries:[/cyan]")
-        console.print("  python ssb_agent_mcp.py \"What are the latest population statistics?\"")
-        console.print("  python ssb_agent_mcp.py \"Show me income data by age group\"")
-        console.print("\n[dim]💡 Tip: Norwegian keywords often yield better results[/dim]")
+        console.print("[red]Bruk:[/red] python ssb_agent_mcp.py \"Din spørring\"")
+        console.print("\n[bold]Eksempler:[/bold]")
+        console.print("\n[cyan]Grunnleggende spørringer:[/cyan]")
+        console.print("  python ssb_agent_mcp.py \"befolkning i Norge\"")
+        console.print("  python ssb_agent_mcp.py \"arbeidsledighet etter region\"")
+        console.print("  python ssb_agent_mcp.py \"utdanningsnivå fylkesvis\"")
+        console.print("\n[cyan]Sammenligning og analyse:[/cyan]")
+        console.print("  python ssb_agent_mcp.py \"sammenlign befolkning Oslo og Bergen\"")
+        console.print("  python ssb_agent_mcp.py \"arbeidsledighet utvikling siden 2020\"")
+        console.print("  python ssb_agent_mcp.py \"nyeste utdanningsstatistikk per region\"")
+        console.print("\n[cyan]Tidsserier og trender:[/cyan]")
+        console.print("  python ssb_agent_mcp.py \"boligpriser utvikling siste 5 år\"")
+        console.print("  python ssb_agent_mcp.py \"sysselsetting næring 2024\"")
+        console.print("  python ssb_agent_mcp.py \"hva er de nyeste tallene for innvandring\"")
+        console.print("\n[dim]💡 Tips: Norske nøkkelord gir best resultater fra SSB[/dim]")
         sys.exit(1)
     
     query = sys.argv[1]
@@ -564,11 +568,11 @@ async def main():
         border_style="blue"
     ))
     
-    console.print("[dim]Connecting to enhanced MCP server with advanced SSB API capabilities...[/dim]")
+    console.print("[dim]Kobler til strømlinjeformet MCP-server med 4 SSB API-verktøy...[/dim]")
     
     agent = SSBAgent()
     
-    console.print(f"[dim]Starting analysis with {model} reasoning model...[/dim]\n")
+    console.print(f"[dim]Starter analyse med {model} modell for norske statistikkspørsmål...[/dim]\n")
     
     # Process query with streaming to show reasoning
     answer = await agent.process_query(query)
