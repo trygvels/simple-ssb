@@ -31,6 +31,7 @@ from agents.mcp import MCPServerStdio, MCPServerStdioParams
 from agents import model_settings as agent_model_settings
 
 model = "gpt-5-mini"
+model = "gpt-5"
 
 # Setup
 console = Console()
