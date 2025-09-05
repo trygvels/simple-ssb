@@ -247,8 +247,15 @@ class SSBAgent:
                     tables = parsed_output.get("tables", [])
                     total = parsed_output.get("total_found", len(tables))
                     if tables:
-                        best_table = tables[0]
-                        console.print(f"   [green]✓ Found {total} tables, best match: {best_table.get('id', 'N/A')} - {best_table.get('title', 'N/A')[:50]}...[/green]")
+                        console.print(f"   [green]✓ Found {total} tables[/green]")
+                        # Show top 5 tables found
+                        for i, table in enumerate(tables[:5]):
+                            table_id = table.get('id', 'N/A')
+                            title = table.get('title', 'N/A')[:60]
+                            score = table.get('score', 0)
+                            console.print(f"     {i+1}. [cyan]{table_id}[/cyan] - {title}... [dim](score: {score})[/dim]")
+                        if len(tables) > 5:
+                            console.print(f"     [dim]... and {len(tables) - 5} more[/dim]")
                     else:
                         console.print(f"   [yellow]⚠ No tables found for search query[/yellow]")
                 
@@ -262,6 +269,13 @@ class SSBAgent:
                     if variables:
                         dim_names = [v.get("api_name", "N/A") for v in variables[:3]]
                         console.print(f"   [dim]  Key dimensions: {', '.join(dim_names)}[/dim]")
+                    
+                    # Show aggregation options if available
+                    valuesets = parsed_output.get("valuesets", [])
+                    if valuesets:
+                        agg_options = [vs for vs in valuesets if vs.startswith(('agg_', 'vs_'))]
+                        if agg_options:
+                            console.print(f"   [dim]  Aggregation options: {', '.join(agg_options[:3])}[/dim]")
                 
                 elif tool_name in ["discover_dimension_values", "discover_code_lists", "search_region_codes"]:
                     dim_name = parsed_output.get("dimension_name", "N/A")

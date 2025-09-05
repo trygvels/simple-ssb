@@ -860,14 +860,20 @@ class SSBStandaloneAgent:
                     tables = parsed_output.get("tables", [])
                     total = parsed_output.get("total_found", len(tables))
                     if tables:
-                        best_table = tables[0]
-                        console.print(f"   [green]✓ Found {total} tables, best match: {best_table.get('id', 'N/A')} - {best_table.get('title', 'N/A')[:50]}...[/green]")
+                        console.print(f"   [green]✓ Found {total} tables[/green]")
+                        # Show top 5 tables found
+                        for i, table in enumerate(tables[:5]):
+                            table_id = table.get('id', 'N/A')
+                            title = table.get('title', 'N/A')[:60]
+                            score = table.get('score', 0)
+                            console.print(f"     {i+1}. [cyan]{table_id}[/cyan] - {title}... [dim](score: {score})[/dim]")
+                        if len(tables) > 5:
+                            console.print(f"     [dim]... and {len(tables) - 5} more[/dim]")
                     else:
                         console.print(f"   [yellow]⚠ No tables found for search query[/yellow]")
                 
                 elif tool_name == "get_table_info":
                     table_id = parsed_output.get("table_id", "N/A")
-                    title = parsed_output.get("title", "N/A")
                     variables = parsed_output.get("variables", [])
                     time_span = parsed_output.get("time_span", "N/A")
                     console.print(f"   [green]✓ Table {table_id}: {len(variables)} dimensions, {time_span}[/green]")
@@ -876,6 +882,22 @@ class SSBStandaloneAgent:
                     if variables:
                         dim_names = [v.get("api_name", "N/A") for v in variables[:3]]
                         console.print(f"   [dim]  Key dimensions: {', '.join(dim_names)}[/dim]")
+                    
+                    # Show aggregation options if available
+                    agg_options = parsed_output.get("aggregation_options", {})
+                    if agg_options:
+                        console.print(f"   [dim]  Aggregation options available:[/dim]")
+                        for dim_name, options in list(agg_options.items())[:3]:  # Show first 3
+                            valuesets = options.get("valuesets", [])
+                            aggregations = options.get("aggregations", [])
+                            if valuesets or aggregations:
+                                option_list = []
+                                for vs in valuesets[:2]:  # Show first 2 of each type
+                                    option_list.append(f"{vs.get('id', 'N/A')}")
+                                for agg in aggregations[:2]:
+                                    option_list.append(f"{agg.get('id', 'N/A')}")
+                                if option_list:
+                                    console.print(f"     • {dim_name}: {', '.join(option_list)}")
                 
                 elif tool_name == "discover_dimension_values":
                     dim_name = parsed_output.get("dimension_name", "N/A")
