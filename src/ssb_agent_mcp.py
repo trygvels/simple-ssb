@@ -277,7 +277,9 @@ class SSBAgent:
                     if valuesets:
                         agg_options = [vs for vs in valuesets if vs.startswith(('agg_', 'vs_'))]
                         if agg_options:
-                            console.print(f"   [dim]  Aggregation options: {', '.join(agg_options[:3])}[/dim]")
+                            console.print(f"   [dim]  {len(agg_options)} aggregation options available:[/dim]")
+                            # Group by dimension if possible, or show as simple list
+                            console.print(f"   [dim]  • Available: {', '.join(agg_options[:4])}[/dim]")
                 
                 elif tool_name in ["discover_dimension_values", "discover_code_lists", "search_region_codes"]:
                     dim_name = parsed_output.get("dimension_name", "N/A")

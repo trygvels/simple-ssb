@@ -888,7 +888,12 @@ class SSBStandaloneAgent:
                     # Show aggregation options if available
                     agg_options = parsed_output.get("aggregation_options", {})
                     if agg_options:
-                        console.print(f"   [dim]  Aggregation options available:[/dim]")
+                        # Count total options across all dimensions
+                        total_options = sum(
+                            len(options.get("valuesets", [])) + len(options.get("aggregations", []))
+                            for options in agg_options.values()
+                        )
+                        console.print(f"   [dim]  {total_options} aggregation options available:[/dim]")
                         for dim_name, options in list(agg_options.items())[:3]:  # Show first 3
                             valuesets = options.get("valuesets", [])
                             aggregations = options.get("aggregations", [])
