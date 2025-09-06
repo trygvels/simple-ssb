@@ -20,6 +20,7 @@ import json
 import time
 from typing import Optional, Dict, Any, List
 from datetime import datetime, timedelta
+from urllib.parse import urlencode
 
 import openai
 import httpx
@@ -34,6 +35,13 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from agents import Agent, run, set_default_openai_client, set_default_openai_api, set_tracing_disabled
 from agents import model_settings as agent_model_settings
 from agents import function_tool
+
+try:
+    from pyjstat import pyjstat
+    PYJSTAT_AVAILABLE = True
+except ImportError:
+    PYJSTAT_AVAILABLE = False
+    print("Warning: pyjstat not installed. Using fallback JSON-Stat parser.")
 
 # Configuration
 model = "gpt-5"
@@ -60,8 +68,8 @@ for handler in logging.root.handlers:
 # ============================================================================
 
 class RateLimiter:
-    """Rate limiter for SSB API compliance (30 calls per 10 minutes)"""
-    def __init__(self, max_calls=25, time_window=600):
+    """Rate limiter for SSB API compliance (30 calls per 60 seconds)"""
+    def __init__(self, max_calls=30, time_window=60):
         self.max_calls = max_calls
         self.time_window = time_window
         self.calls = []
@@ -73,12 +81,175 @@ class RateLimiter:
         if len(self.calls) >= self.max_calls:
             sleep_time = self.time_window - (now - self.calls[0]).total_seconds()
             if sleep_time > 0:
-                await asyncio.sleep(min(sleep_time, 2.0))
+                # Add jitter to avoid thundering herd
+                jitter = min(1.0, sleep_time * 0.1)
+                await asyncio.sleep(min(sleep_time + jitter, 5.0))
 
         self.calls.append(now)
 
 # Global rate limiter
 rate_limiter = RateLimiter()
+
+def jsonstat_to_dataframe(data: dict, max_points: int = 100) -> dict:
+    """Convert JSON-Stat data to formatted dataframe-like structure.
+    
+    Uses pyjstat if available, otherwise falls back to manual parsing.
+    Includes status information for data quality indicators.
+    """
+    if PYJSTAT_AVAILABLE:
+        try:
+            # Use pyjstat for proper JSON-Stat parsing
+            from pyjstat import Dataset
+            ds = Dataset.read(data)
+            df_dict = ds.write('dataframe_list')
+            
+            # Convert to our format
+            formatted_data = []
+            status_data = data.get('status', {})
+            
+            for table_name, df_data in df_dict.items():
+                # df_data is a list of dictionaries
+                for i, row in enumerate(df_data):
+                    if i >= max_points:
+                        break
+                    if 'value' in row and row['value'] is not None:
+                        # Add status if available
+                        if status_data and str(i) in status_data:
+                            row['status'] = status_data[str(i)]
+                        formatted_data.append(row)
+            
+            return formatted_data
+        except Exception as e:
+            # Fall back to manual parsing
+            pass
+    
+    # Manual JSON-Stat parsing with proper stride calculation
+    if 'dimension' not in data or 'value' not in data:
+        return []
+    
+    dimensions = data['dimension']
+    values = data['value']
+    status = data.get('status', {})  # Get status information
+    
+    # Get dimension order and sizes
+    dim_order = data.get('id', [])
+    dim_sizes = data.get('size', [])
+    
+    if not dim_order or not dim_sizes:
+        # Fallback to old method if structure is missing
+        return _legacy_jsonstat_parse(data, max_points)
+    
+    # Calculate strides for row-major order
+    strides = [1] * len(dim_sizes)
+    for i in range(len(dim_sizes) - 2, -1, -1):
+        strides[i] = strides[i + 1] * dim_sizes[i + 1]
+    
+    formatted_data = []
+    non_null_count = 0
+    
+    for i, value in enumerate(values):
+        # Include entries with status even if value is None (e.g., confidential data)
+        status_code = status.get(str(i), "") if status else ""
+        
+        if (value is not None or status_code) and non_null_count < max_points:
+            data_point = {"value": value, "index": i}
+            
+            # Add status if present
+            if status_code:
+                data_point["status"] = status_code
+                # Interpret common status codes
+                if status_code == "..":
+                    data_point["status_label"] = "Not available"
+                elif status_code == "...":
+                    data_point["status_label"] = "Not applicable"  
+                elif status_code == ".":
+                    data_point["status_label"] = "Confidential"
+                elif status_code == "-":
+                    data_point["status_label"] = "Nil/Less than 0.5"
+            
+            # Calculate indices for each dimension
+            remainder = i
+            for j, dim_name in enumerate(dim_order):
+                dim_index = remainder // strides[j]
+                remainder = remainder % strides[j]
+                
+                # Get dimension data
+                dim_data = dimensions.get(dim_name, {})
+                if 'category' in dim_data:
+                    category = dim_data['category']
+                    
+                    # Get the code and label
+                    if 'index' in category:
+                        codes = list(category['index'].keys()) if isinstance(category['index'], dict) else category['index']
+                        if dim_index < len(codes):
+                            code = codes[dim_index]
+                            data_point[f"{dim_name}_code"] = code
+                            
+                            # Add label if available
+                            if 'label' in category and code in category['label']:
+                                data_point[dim_name] = category['label'][code]
+                            else:
+                                data_point[dim_name] = code
+            
+            formatted_data.append(data_point)
+            non_null_count += 1
+    
+    return formatted_data
+
+def _legacy_jsonstat_parse(data: dict, max_points: int) -> list:
+    """Legacy fallback parser for backward compatibility."""
+    formatted_data = []
+    dimensions = data.get('dimension', {})
+    values = data.get('value', [])
+    
+    non_null_count = 0
+    for i, value in enumerate(values):
+        if value is not None and non_null_count < max_points:
+            data_point = {"value": value, "index": i}
+            
+            # Simple modulo approach (not fully correct but works for some cases)
+            for dim_name, dim_data in dimensions.items():
+                if 'category' in dim_data and 'label' in dim_data['category']:
+                    labels = list(dim_data['category']['label'].values())
+                    size = len(labels)
+                    if size > 0:
+                        data_point[dim_name] = labels[i % size]
+            
+            formatted_data.append(data_point)
+            non_null_count += 1
+    
+    return formatted_data
+
+def estimate_cell_count(metadata: dict, filters: dict) -> int:
+    """Estimate the number of cells that will be returned."""
+    if not metadata or 'dimension' not in metadata:
+        return 0
+    
+    dimensions = metadata['dimension']
+    cell_count = 1
+    
+    for dim_name, dim_data in dimensions.items():
+        if dim_name in filters:
+            filter_value = filters[dim_name]
+            if isinstance(filter_value, str):
+                if filter_value == '*':
+                    # All values
+                    cell_count *= len(dim_data.get('category', {}).get('index', []))
+                elif ',' in filter_value:
+                    # Multiple values
+                    cell_count *= len(filter_value.split(','))
+                else:
+                    # Single value
+                    cell_count *= 1
+            elif isinstance(filter_value, list):
+                cell_count *= len(filter_value)
+            else:
+                cell_count *= 1
+        else:
+            # No filter means all values
+            cell_count *= len(dim_data.get('category', {}).get('index', []))
+    
+    return cell_count
 
 def create_error_response(tool_name: str, table_id: str = None, error_msg: str = "", suggestion: str = "", **extras) -> dict:
     """Create standardized error response with agent guidance."""
@@ -140,14 +311,19 @@ def add_agent_guidance(tool_name: str, result: dict, **context) -> dict:
     
     return result
 
-async def robust_api_call(url: str, params: dict, max_retries: int = 3) -> Optional[dict]:
-    """Make API call with retry logic and rate limiting."""
+async def robust_api_call(url: str, params: dict = None, json_body: dict = None, max_retries: int = 3) -> Optional[dict]:
+    """Make API call with retry logic, rate limiting, and GET/POST support."""
     await rate_limiter.acquire()
 
     for attempt in range(max_retries):
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.get(url, params=params)
+                if json_body:
+                    # POST request
+                    response = await client.post(url, json=json_body, params=params)
+                else:
+                    # GET request
+                    response = await client.get(url, params=params)
                 response.raise_for_status()
                 result = response.json()
                 return result
@@ -156,6 +332,12 @@ async def robust_api_call(url: str, params: dict, max_retries: int = 3) -> Optio
             if e.response.status_code == 429:
                 await asyncio.sleep(2 ** attempt)
                 continue
+            elif e.response.status_code == 503:
+                # PxWeb v2 beta maintenance window (05:00-08:15 and weekends)
+                return {
+                    "error": "PxWeb v2 beta is unavailable (maintenance window: 05:00-08:15 and weekends)",
+                    "suggestion": "Try again later or during working hours"
+                }
             else:
                 return {
                     "error": f"HTTP {e.response.status_code} error from SSB API",
@@ -170,13 +352,15 @@ async def robust_api_call(url: str, params: dict, max_retries: int = 3) -> Optio
     return None
 
 @function_tool
-async def search_tables(query: str) -> dict:
+async def search_tables(query: str, pastdays: int = 0, pagesize: int = 20) -> dict:
     """
     Advanced search for SSB statistical tables using official API search syntax.
-    Generates multiple query variations and scores results for relevance.
+    Supports filtering by recent updates and pagination.
     
     Args:
         query: Search terms for finding SSB statistical tables (Norwegian keywords work best)
+        pastdays: Filter to tables updated in the last N days (0 = all)
+        pagesize: Number of results per page (max 100)
     
     Returns:
         dict: Search results with scored tables and metadata
@@ -185,7 +369,7 @@ async def search_tables(query: str) -> dict:
         
         base_url = "https://data.ssb.no/api/pxwebapi/v2-beta/tables"
         language = "no"  # Fixed Norwegian language
-        max_results = 10  # Fixed default
+        max_results = min(pagesize, 100)  # Cap at API limit
         
         # Generate simple query variations
         query_variations = [
@@ -201,8 +385,13 @@ async def search_tables(query: str) -> dict:
             params = {
                 "query": search_query,
                 "lang": language,
-                "pageSize": max_results
+                "pageSize": max_results,
+                "pagenumber": 1
             }
+            
+            # Add pastdays filter if specified
+            if pastdays > 0:
+                params["pastdays"] = pastdays
 
             data = await robust_api_call(base_url, params)
             
@@ -214,21 +403,64 @@ async def search_tables(query: str) -> dict:
 
         tables = list(all_tables.values())
         
-        # Simple scoring
+        # Enhanced scoring with multiple factors
         query_words = query.lower().split()
         scored_tables = []
+        current_year = datetime.now().year
 
         for table in tables:
             label = table.get('label', '').lower()
-            score = 1
+            description = table.get('description', '').lower()
+            variables = [v.lower() for v in table.get('variableNames', [])]
             
+            score = 0
+            
+            # Title matching (highest weight)
             for word in query_words:
-                if len(word) > 2 and word in label:
-                    score += 10
+                if len(word) > 2:
+                    if word in label:
+                        score += 20  # Exact match in title
+                    elif any(word in var for var in variables):
+                        score += 10  # Match in variables
+                    elif word in description:
+                        score += 5   # Match in description
+            
+            # Token coverage - percentage of query words found
+            words_found = sum(1 for word in query_words if len(word) > 2 and (word in label or word in description))
+            coverage = words_found / max(len([w for w in query_words if len(w) > 2]), 1)
+            score += int(coverage * 15)
+            
+            # Recency boost
+            updated = table.get('updated', '')
+            if updated:
+                try:
+                    # Parse ISO date
+                    update_date = datetime.fromisoformat(updated.replace('Z', '+00:00'))
+                    days_old = (datetime.now(update_date.tzinfo) - update_date).days
+                    
+                    if days_old < 30:
+                        score += 15  # Very recent
+                    elif days_old < 90:
+                        score += 10  # Recent
+                    elif days_old < 365:
+                        score += 5   # This year
+                except:
+                    pass
+            
+            # Has recent data (2024/2025)
+            last_period = str(table.get('lastPeriod', ''))
+            if str(current_year) in last_period or str(current_year - 1) in last_period:
+                score += 8
 
-            # Boost for recent updates
-            if '2024' in table.get('updated', '') or '2025' in table.get('updated', ''):
-                score += 5
+            # Subject area paths for filtering
+            paths = table.get('paths', [])
+            subject_areas = []
+            if paths:
+                for path in paths:
+                    if isinstance(path, dict):
+                        subject_areas.append(path.get('id', ''))
+                    elif isinstance(path, str):
+                        subject_areas.append(path)
 
             scored_tables.append({
                 'id': table.get('id'),
@@ -238,7 +470,9 @@ async def search_tables(query: str) -> dict:
                 'score': score,
                 'time_period': f"{table.get('firstPeriod', '')} - {table.get('lastPeriod', '')}",
                 'variables': len(table.get('variableNames', [])),
-                'subject_area': table.get('subjectCode', '')
+                'subject_area': table.get('subjectCode', ''),
+                'paths': subject_areas,
+                'token_coverage': f"{int(coverage * 100)}%"
             })
 
         scored_tables.sort(key=lambda x: x['score'], reverse=True)
@@ -338,16 +572,37 @@ async def get_table_info(table_id: str, include_structure: bool = True) -> dict:
                     enhanced_var = next((v for v in enhanced_variables if v["display_name"] == dim_name), None)
                     api_name = enhanced_var["api_name"] if enhanced_var else dim_name
                     
+                    # Check role (time, geo, metric)
+                    role = dim_data.get("role")
+                    
                     detailed_var = {
                         "display_name": dim_name,
                         "api_name": api_name,
                         "is_mapped": enhanced_var["is_mapped"] if enhanced_var else False,
                         "pattern_hint": enhanced_var["pattern_hint"] if enhanced_var else None,
                         "type": "dimension",
+                        "role": role,
                         "total_values": len(codes),
                         "sample_values": codes[:5] if codes else [],
                         "sample_labels": [labels.get(code, code) for code in codes[:5]] if codes else []
                     }
+                    
+                    # Add units and decimals for ContentsCode dimension
+                    if dim_name == "ContentsCode":
+                        extension = dim_data.get("extension", {})
+                        contents = extension.get("contents", {})
+                        
+                        units_info = {}
+                        for code in codes[:10]:  # Sample first 10
+                            if code in contents:
+                                content_info = contents[code]
+                                units_info[code] = {
+                                    "unit": content_info.get("unit", "count"),
+                                    "decimals": content_info.get("decimals", 0)
+                                }
+                        
+                        if units_info:
+                            detailed_var["units_info"] = units_info
                     
                     # Check for aggregation options
                     extension = dim_data.get("extension", {})
@@ -524,17 +779,173 @@ async def discover_dimension_values(table_id: str, dimension_name: str, search_t
             suggestion="Check table ID and dimension name"
         )
 
+def merge_table_data(table1_data: list, table2_data: list, join_keys: list) -> list:
+    """Merge data from two tables on common dimensions.
+    
+    Args:
+        table1_data: Formatted data from first table
+        table2_data: Formatted data from second table  
+        join_keys: List of dimension names to join on (e.g., ['Tid', 'Region'])
+    
+    Returns:
+        list: Merged data points
+    """
+    # Create lookup dictionary from table2
+    table2_lookup = {}
+    for row in table2_data:
+        # Build composite key from join dimensions
+        key_parts = []
+        for key in join_keys:
+            # Try both with and without _code suffix
+            value = row.get(key) or row.get(f"{key}_code")
+            if value:
+                key_parts.append(str(value))
+        
+        if key_parts:
+            composite_key = "|".join(key_parts)
+            table2_lookup[composite_key] = row
+    
+    # Merge tables
+    merged_data = []
+    for row1 in table1_data:
+        # Build composite key for table1 row
+        key_parts = []
+        for key in join_keys:
+            value = row1.get(key) or row1.get(f"{key}_code")
+            if value:
+                key_parts.append(str(value))
+        
+        if key_parts:
+            composite_key = "|".join(key_parts)
+            
+            # Check if matching row exists in table2
+            if composite_key in table2_lookup:
+                row2 = table2_lookup[composite_key]
+                
+                # Merge rows
+                merged_row = row1.copy()
+                
+                # Add fields from table2 that aren't in table1
+                for field, value in row2.items():
+                    if field not in merged_row and field != "index":
+                        # Rename value fields to avoid conflicts
+                        if field == "value":
+                            merged_row["value_table2"] = value
+                        else:
+                            merged_row[field] = value
+                
+                merged_data.append(merged_row)
+    
+    return merged_data
+
 @function_tool
-async def get_filtered_data(table_id: str, filters_json: str, time_selection: str = "", code_lists_json: str = "") -> dict:
+async def merge_tables(table1_id: str, table1_filters_json: str, table2_id: str, table2_filters_json: str, join_dimensions_json: str) -> dict:
+    """
+    Merge data from two SSB tables on common dimensions.
+    
+    Args:
+        table1_id: First table ID
+        table1_filters_json: JSON string of filters for table 1
+        table2_id: Second table ID  
+        table2_filters_json: JSON string of filters for table 2
+        join_dimensions_json: JSON array of dimension names to join on (e.g., '["Tid", "Region"]')
+    
+    Returns:
+        dict: Merged data with statistics from both tables
+    """
+    try:
+        # Parse JSON inputs
+        table1_filters = json.loads(table1_filters_json) if table1_filters_json else {}
+        table2_filters = json.loads(table2_filters_json) if table2_filters_json else {}
+        join_dimensions = json.loads(join_dimensions_json) if join_dimensions_json else []
+        
+        if not join_dimensions:
+            return {
+                "error": "Join dimensions required",
+                "suggestion": "Specify common dimensions like ['Tid', 'Region'] to join tables"
+            }
+        
+        # Fetch data from both tables
+        data1 = await get_filtered_data(table1_id, table1_filters_json)
+        if "error" in data1:
+            return {
+                "error": f"Failed to fetch table 1: {data1['error']}",
+                "suggestion": data1.get("suggestion", "Check table 1 parameters")
+            }
+        
+        data2 = await get_filtered_data(table2_id, table2_filters_json)
+        if "error" in data2:
+            return {
+                "error": f"Failed to fetch table 2: {data2['error']}",
+                "suggestion": data2.get("suggestion", "Check table 2 parameters")
+            }
+        
+        # Get formatted data
+        table1_data = data1.get("formatted_data", [])
+        table2_data = data2.get("formatted_data", [])
+        
+        if not table1_data or not table2_data:
+            return {
+                "error": "No data to merge",
+                "suggestion": "Ensure both tables return data with current filters"
+            }
+        
+        # Perform merge
+        merged_data = merge_table_data(table1_data, table2_data, join_dimensions)
+        
+        # Prepare result
+        result = {
+            "table1_id": table1_id,
+            "table1_title": data1.get("title", ""),
+            "table2_id": table2_id,
+            "table2_title": data2.get("title", ""),
+            "join_dimensions": join_dimensions,
+            "table1_rows": len(table1_data),
+            "table2_rows": len(table2_data),
+            "merged_rows": len(merged_data),
+            "merged_data": merged_data[:100],  # Limit output
+            "truncated": len(merged_data) > 100
+        }
+        
+        # Calculate statistics if both tables have numeric values
+        if merged_data:
+            values1 = [row.get("value", 0) for row in merged_data if "value" in row]
+            values2 = [row.get("value_table2", 0) for row in merged_data if "value_table2" in row]
+            
+            if values1:
+                result["table1_stats"] = {
+                    "min": min(values1),
+                    "max": max(values1),
+                    "avg": sum(values1) / len(values1)
+                }
+            
+            if values2:
+                result["table2_stats"] = {
+                    "min": min(values2),
+                    "max": max(values2),
+                    "avg": sum(values2) / len(values2)
+                }
+        
+        return result
+        
+    except Exception as e:
+        return {
+            "error": f"Merge failed: {str(e)}",
+            "suggestion": "Check parameters and ensure tables have common dimensions"
+        }
+
+@function_tool
+async def get_filtered_data(table_id: str, filters_json: str, time_selection: str = "", code_lists_json: str = "", output_values_json: str = "") -> dict:
     """
     Get filtered statistical data with enhanced error handling and validation.
-    Includes diagnostic information when queries fail.
+    Supports both GET and POST methods, with automatic fallback for large queries.
     
     Args:
         table_id: SSB table identifier
         filters_json: JSON string of dimension filters (e.g., '{"Region": "0", "Tid": "2024"}')
         time_selection: Optional time selection (deprecated - use filters['Tid'] instead)
         code_lists_json: JSON string of code lists for aggregation (e.g., '{"NACE2007": "agg_NACE2007arb11"}')
+        output_values_json: JSON string for aggregation output values (e.g., '{"Region": "aggregated"}')
     
     Returns:
         dict: Filtered data with formatted results and summary statistics
@@ -543,6 +954,7 @@ async def get_filtered_data(table_id: str, filters_json: str, time_selection: st
         # Parse JSON strings to dictionaries
         filters = json.loads(filters_json) if filters_json else {}
         code_lists = json.loads(code_lists_json) if code_lists_json else None
+        output_values = json.loads(output_values_json) if output_values_json else None
         
         # Validate filters
         if not filters or not isinstance(filters, dict):
@@ -555,8 +967,22 @@ async def get_filtered_data(table_id: str, filters_json: str, time_selection: st
 
         base_url = "https://data.ssb.no/api/pxwebapi/v2-beta/tables"
         data_url = f"{base_url}/{table_id}/data"
+        metadata_url = f"{base_url}/{table_id}/metadata"
         language = "no"  # Fixed Norwegian language
         max_data_points = 100  # Fixed default
+        max_cells = 800000  # SSB API limit
+
+        # First check estimated cell count
+        metadata = await robust_api_call(metadata_url, {"lang": language})
+        if metadata:
+            estimated_cells = estimate_cell_count(metadata, filters)
+            if estimated_cells > max_cells:
+                return create_error_response(
+                    "get_filtered_data",
+                    table_id=table_id,
+                    error_msg=f"Query would return {estimated_cells:,} cells, exceeding the {max_cells:,} limit",
+                    suggestion="Reduce the scope of your query by filtering more dimensions or time periods"
+                )
 
         # Build query parameters
         query_params = {
@@ -569,22 +995,76 @@ async def get_filtered_data(table_id: str, filters_json: str, time_selection: st
             for dimension, code_list in code_lists.items():
                 query_params[f"codelist[{dimension}]"] = code_list
 
-        # Handle filters (ensure filters is a dict)
+        # Add output values for aggregations
+        if output_values and isinstance(output_values, dict):
+            for dimension, output_value in output_values.items():
+                query_params[f"outputValues[{dimension}]"] = output_value
+
+        # Handle filters with support for wildcards and special syntax
         if isinstance(filters, dict):
             for dimension, values in filters.items():
                 if isinstance(values, str):
-                    value_list = [values] if ',' not in values else values.split(',')
+                    # Support special syntax: *, ?, top(n), from(YYYY), [range(a,b)]
+                    query_params[f"valueCodes[{dimension}]"] = values
+                elif isinstance(values, list):
+                    query_params[f"valueCodes[{dimension}]"] = ",".join(str(v) for v in values)
                 else:
-                    value_list = values if isinstance(values, list) else [str(values)]
+                    query_params[f"valueCodes[{dimension}]"] = str(values)
 
-                query_params[f"valueCodes[{dimension}]"] = ",".join(value_list)
-
-        # Handle time selection
-        if time_selection and isinstance(time_selection, str):
+        # Handle time selection (backward compatibility)
+        if time_selection and isinstance(time_selection, str) and "Tid" not in filters:
             query_params["valueCodes[Tid]"] = time_selection
 
+        # Check if we should use POST instead of GET
+        url_with_params = data_url + "?" + urlencode(query_params, safe="[],(),*")
+        use_post = len(url_with_params) > 2000
 
-        data = await robust_api_call(data_url, query_params)
+        if use_post:
+            # Convert to POST body format according to PxWeb v2.0 spec
+            post_body = {
+                "lang": language,
+                "outputformat": "json-stat2",
+                "query": []
+            }
+            
+            # Track which dimensions have codelists
+            dim_codelists = {}
+            dim_outputvalues = {}
+            
+            # First pass: extract codelists and outputValues
+            for key, value in query_params.items():
+                if key.startswith("codelist["):
+                    dim = key[9:-1]
+                    dim_codelists[dim] = value
+                elif key.startswith("outputValues["):
+                    dim = key[13:-1]
+                    dim_outputvalues[dim] = value
+            
+            # Build query array for POST
+            for key, value in query_params.items():
+                if key.startswith("valueCodes["):
+                    dim = key[11:-1]  # Extract dimension name
+                    
+                    query_item = {
+                        "code": dim,
+                        "selection": {
+                            "filter": "item",
+                            "values": value.split(",") if "," in value else [value]
+                        }
+                    }
+                    
+                    # Add codelist if specified for this dimension
+                    if dim in dim_codelists:
+                        query_item["selection"]["filter"] = "agg:" + dim_codelists[dim]
+                        # For aggregations, values might be different
+                        if dim in dim_outputvalues:
+                            query_item["outputValues"] = dim_outputvalues[dim]
+                    
+                    post_body["query"].append(query_item)
+            
+            data = await robust_api_call(data_url, json_body=post_body)
+        else:
+            data = await robust_api_call(data_url, query_params)
         if not data:
             return create_error_response(
                 "get_filtered_data",
@@ -624,27 +1104,37 @@ async def get_filtered_data(table_id: str, filters_json: str, time_selection: st
         }
 
         if 'dimension' in data and 'value' in data:
+            # Use proper JSON-Stat parser
+            formatted_data = jsonstat_to_dataframe(data, max_data_points)
+            
+            # Apply units and decimals normalization for ContentsCode
             dimensions = data["dimension"]
+            if "ContentsCode" in dimensions:
+                contents_dim = dimensions["ContentsCode"]
+                extension = contents_dim.get("extension", {})
+                contents = extension.get("contents", {})
+                
+                for data_point in formatted_data:
+                    # Get the ContentsCode for this data point
+                    contents_code = data_point.get("ContentsCode_code")
+                    if contents_code and contents_code in contents:
+                        content_info = contents[contents_code]
+                        decimals = content_info.get("decimals", 0)
+                        unit = content_info.get("unit", "")
+                        
+                        # Normalize value by applying decimals
+                        if decimals and decimals != 0:
+                            original_value = data_point["value"]
+                            data_point["value"] = original_value / (10 ** decimals)
+                            data_point["normalized"] = True
+                        
+                        # Add unit info
+                        data_point["unit"] = unit
+            
+            result["formatted_data"] = formatted_data
+            result["returned_data_points"] = len(formatted_data)
+            
             values = data["value"]
-
-            # Create structured data representation
-            non_null_count = 0
-            for i, value in enumerate(values):
-                if value is not None and non_null_count < max_data_points:
-                    data_point = {"value": value, "index": i}
-
-                    # Add dimension labels
-                    for dim_name, dim_data in dimensions.items():
-                        if 'category' in dim_data and 'label' in dim_data['category']:
-                            labels = list(dim_data['category']['label'].values())
-                            size = len(labels)
-                            if size > 0:
-                                data_point[dim_name] = labels[i % size]
-
-                    result["formatted_data"].append(data_point)
-                    non_null_count += 1
-
-            result["returned_data_points"] = non_null_count
 
             # Add summary statistics
             numeric_values = [v for v in values if v is not None and isinstance(v, (int, float))]
@@ -997,6 +1487,7 @@ Du har tilgang til disse verktøyene:
 - get_table_info: Få detaljert informasjon om en tabell
 - discover_dimension_values: Utforsk tilgjengelige verdier for dimensjoner
 - get_filtered_data: Hent filtrerte statistikkdata
+- merge_tables: Slå sammen data fra to tabeller på felles dimensjoner
 
 TEKNISKE KRAV:
 - Bruk alltid filters_json parameter i get_filtered_data (påkrevd JSON string)
@@ -1017,7 +1508,7 @@ SVAR PÅ NORSK:
 
 Din oppgave er å finne relevant statistikk og presentere den på en klar og nyttig måte.""",
                 model=self.model,
-                tools=[search_tables, get_table_info, discover_dimension_values, get_filtered_data],
+                tools=[search_tables, get_table_info, discover_dimension_values, get_filtered_data, merge_tables],
                 model_settings=agent_model_settings.ModelSettings(
                     reasoning={
                         "effort": os.getenv("AZURE_REASONING_EFFORT", "medium"),
